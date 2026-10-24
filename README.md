@@ -80,6 +80,16 @@ with any player that reads tags.
   audio itself (FLAC's MD5 of the decoded samples), so renames keep a passport
   and a new edition gets a new one.
 
+**New albums — `/newreleases`**
+- Checks Deezer for new **albums** by the artists in your library — not singles,
+  EPs, reissues, remix or live albums, nor what you already have.
+- Off by default: `/newreleases` checks now; `/newreleases daily | weekly | monthly`
+  turns on automatic checks (at 10:00, `TZ`), which stay silent without news;
+  `/newreleases stop` turns them off, `/newreleases status` shows the state.
+- Namesakes cannot be told apart for sure (Deezer merges same-named artists),
+  so the message has two parts: albums in the genre of your albums by that artist,
+  and *may be a namesake* — with the reason — instead of hiding anything.
+
 **Library maintenance — `/fixlibrary`**
 - Checks every album against the conventions and shows a plan before touching
   anything: apply all, go through it one by one, or cancel.
@@ -192,6 +202,8 @@ To update: `git pull && docker compose up -d --build`.
 | `/fixlibrary all` | The same plus a Discogs title check of every album (slow: Discogs rate limit). |
 | `/quality` | Mastering passports: the most crushed albums of the library. |
 | `/quality <name>` | Passports of the albums matching the name, track by track. |
+| `/newreleases` | New albums by your artists (Deezer), checked now. |
+| `/newreleases daily` / `weekly` / `monthly` / `stop` / `status` | Automatic checks: turn on, off, show. Off until you turn them on. |
 | `/help` | List the commands. |
 
 The bot fills its `/` command menu itself on start — in your chat only; no BotFather setup needed.
@@ -206,6 +218,7 @@ python album_processor.py "<album folder>"…     # process the given folders
 python album_processor.py --fix-library [--all] --plan-out plan.json   # check, save the plan
 python album_processor.py --fix-library --apply plan.json              # apply a (reviewed) plan
 python album_processor.py --quality ["<name>"]                         # mastering passports
+python album_processor.py --releases [check|status|daily|weekly|monthly|stop]   # new albums
 ```
 
 ### Recovering from a mistake
@@ -213,6 +226,7 @@ python album_processor.py --quality ["<name>"]                         # masteri
 - `music/.album_processor/fixes.jsonl` — every library change with its old values.
 - `music/.album_processor/replaced/<run>/` — albums and covers that were replaced.
 - `music/.album_processor/quality.json` — mastering passports (rebuilt by `/quality` if lost).
+- `music/.album_processor/releases.json` — new-album schedule, Deezer artist matches, albums already reported.
 
 ## Development
 
@@ -232,6 +246,7 @@ scripts/
 │   ├── audioformat.py    decoding (PyAV) and conversion to FLAC 16/44.1
 │   ├── replaygain.py     EBU R128 loudness and true peaks
 │   ├── quality.py        mastering passport: DR, clipping, grades, /quality
+│   ├── releases.py       new albums of the library's artists (Deezer), schedules
 │   ├── upconvert.py      spectral detection of lossy sources
 │   ├── files.py          filesystem helpers and the journal
 │   ├── config.py         settings from environment variables

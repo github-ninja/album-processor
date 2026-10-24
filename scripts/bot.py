@@ -17,6 +17,8 @@ Commands:
   /fixlibrary — check the library (names, tags, covers, format, ReplayGain) and fix deviations
                 ("/fixlibrary all" also checks every album title against Discogs)
   /quality    — mastering passports: the most crushed albums, or "/quality <name>"
+  /newreleases — new albums of the library's artists (Deezer); with daily / weekly /
+                monthly / stop / status it manages automatic checks, off by default
   /help       — show available commands
 """
 
@@ -34,7 +36,9 @@ from pathlib import Path
 from typing import Optional
 
 try:
-    from telegram import BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+    from telegram import (
+        BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Message, Update,
+    )
     from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 except ImportError:
     sys.exit("Error: python-telegram-bot is not installed.")
@@ -53,6 +57,9 @@ ALLOWED_ID = int(os.environ.get("ALLOWED_ID", "0"))
 
 PROCESSOR_SCRIPT = str(Path(__file__).with_name("album_processor.py"))
 DOWNLOADS_PATH = Path(os.environ.get("DOWNLOADS_PATH", "/mnt/data/downloads"))
+MUSIC_PATH = Path(os.environ.get("MUSIC_PATH", "/mnt/data/music"))
+RELEASES_STATE = MUSIC_PATH / ".album_processor" / "releases.json"
+_RELEASES_POLL_SECONDS = 3600  # the processor decides whether a scheduled check is due
 UPCONVERT_ACTION = os.environ.get("UPCONVERT_ACTION", "ask")
 REPLACE_ACTION = os.environ.get("REPLACE_ACTION", "ask")
 
@@ -236,6 +243,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/fixlibrary — проверить библиотеку (названия, теги, обложки, формат) и исправить\n"
         "/fixlibrary all — то же, плюс сверить с Discogs названия всех альбомов (долго)\n"
         "/quality — паспорт мастеринга: самые пережатые альбомы; /quality <название> — подробно\n"
+        "/newreleases — новые альбомы ваших исполнителей; /newreleases weekly (daily, monthly) — "
+        "проверять автоматически, /newreleases stop — выключить\n"
         "/help     — это сообщение\n\n"
         "Образ альбома с CUE режется на треки; хайрез, ALAC, APE и WAV приводятся к FLAC 16/44.1. "
         "Теги и обложка — по Discogs и Deezer, громкость — ReplayGain. "
@@ -271,6 +280,82 @@ async def cmd_newalbum(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("⏳ Запускаю обработку альбомов…")
     log.info("Processing triggered by user %d", ALLOWED_ID)
     await _process(update.message, [], {"UPCONVERT_ACTION": UPCONVERT_ACTION})
+
+
+_NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
+_SCHEDULE_ARGS = ("daily", "weekly", "monthly", "stop", "status")
+
+
+def _release_schedule() -> Optional[str]:
+    try:
+        return json.loads(RELEASES_STATE.read_text(encoding="utf-8")).get("schedule")
+    except (OSError, ValueError):
+        return None
+
+
+async def cmd_newreleases(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update):
+        return
+
+    action = (context.args or ["check"])[0].lower()
+    if action != "check" and action not in _SCHEDULE_ARGS:
+        await update.message.reply_text(
+            "Использование:\n/newreleases — проверить сейчас\n"
+            "/newreleases daily | weekly | monthly — проверять автоматически\n"
+            "/newreleases stop — выключить автопроверку\n/newreleases status — состояние")
+        return
+    if action == "check":
+        await update.message.reply_text("⏳ Ищу новые альбомы ваших исполнителей на Deezer…")
+    try:
+        result = await _run_processor(["--releases", action], {})
+    except Exception as exc:
+        await update.message.reply_text(f"❌ Не удалось запустить скрипт:\n{exc}")
+        log.exception("Failed to run processor")
+        return
+    if result.returncode != 0:
+        await _reply_with_output(update.message, result)
+        return
+
+    markup = None
+    if action == "check" and not _release_schedule():
+        # Offered, never assumed: automatic checks only start on the user's word
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔔 Раз в неделю", callback_data="nr:weekly"),
+            InlineKeyboardButton("🔔 Раз в месяц", callback_data="nr:monthly"),
+            InlineKeyboardButton("Не нужно", callback_data="nr:no"),
+        ]])
+    await update.message.reply_text(result.stdout.strip() or "—", reply_markup=markup,
+                                    link_preview_options=_NO_PREVIEW)
+
+
+async def on_releases_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    if not _is_allowed(update):
+        return
+    await query.edit_message_reply_markup(reply_markup=None)
+    schedule = query.data.split(":", 1)[1]
+    if schedule == "no":
+        await query.message.reply_text("Хорошо. Включить позже: /newreleases weekly (или daily, monthly).")
+        return
+    result = await _run_processor(["--releases", schedule], {})
+    await query.message.reply_text(result.stdout.strip() or result.stderr.strip()[-500:])
+
+
+async def _scheduled_releases(app: Application) -> None:
+    """Every hour: let the processor run a scheduled check if one is due; message only news."""
+    await asyncio.sleep(60)
+    while True:
+        try:
+            result = await _run_processor(["--releases", "due"], {})
+            text = result.stdout.strip()
+            if result.returncode != 0:
+                log.warning("Scheduled release check failed: %s", result.stderr.strip()[-500:])
+            elif text:
+                await app.bot.send_message(ALLOWED_ID, text, link_preview_options=_NO_PREVIEW)
+        except Exception:  # noqa: BLE001 — keep polling; the next hour may work
+            log.exception("Scheduled release check failed")
+        await asyncio.sleep(_RELEASES_POLL_SECONDS)
 
 
 async def cmd_quality(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -581,12 +666,14 @@ COMMANDS = [
     ("newalbum", "Обработать новые альбомы из загрузок", cmd_newalbum),
     ("fixlibrary", "Проверить медиатеку и исправить (fixlibrary all — со сверкой по Discogs)", cmd_fixlibrary),
     ("quality", "Паспорт мастеринга (quality <название> — подробно)", cmd_quality),
+    ("newreleases", "Новые альбомы ваших исполнителей (daily/weekly/monthly/stop — расписание)", cmd_newreleases),
     ("help", "Список команд", cmd_help),
 ]
 
 
-async def _set_menu(app: Application) -> None:
-    """Show the commands in the "/" menu — in the owner's chat only, strangers get no menu."""
+async def _on_start(app: Application) -> None:
+    """Set the "/" menu — in the owner's chat only, strangers get no menu — and start the release poller."""
+    app.bot_data["release_poller"] = asyncio.create_task(_scheduled_releases(app))
     try:
         await app.bot.set_my_commands([BotCommand(name, description) for name, description, _ in COMMANDS],
                                       scope=BotCommandScopeChat(ALLOWED_ID))
@@ -600,11 +687,12 @@ def main() -> None:
     if not ALLOWED_ID:
         sys.exit("Error: ALLOWED_ID environment variable is not set.")
 
-    app = Application.builder().token(BOT_TOKEN).post_init(_set_menu).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(_on_start).build()
     for name, _, handler in COMMANDS:
         app.add_handler(CommandHandler(name, handler))
     app.add_handler(CallbackQueryHandler(on_fix_decision, pattern=r"^fx:"))
     app.add_handler(CallbackQueryHandler(on_upconvert_decision, pattern=r"^up:"))
+    app.add_handler(CallbackQueryHandler(on_releases_schedule, pattern=r"^nr:"))
 
     log.info("Bot started. Waiting for commands from user ID %d…", ALLOWED_ID)
     app.run_polling(drop_pending_updates=True)

@@ -11,6 +11,10 @@ versions follow [Semantic Versioning](https://semver.org/).
   true peak for every album, with a 🟢/🟡/🔴 grade in the import report.
 - `/quality` (CLI `--quality`): the most crushed albums, or one album track by track.
 - The bot sets its `/` command menu on start, visible in the owner's chat only.
+- `/newreleases` (CLI `--releases`): new albums by the library's artists from Deezer —
+  albums only, no reissues or remix/live albums; automatic checks only when scheduled
+  (`daily` / `weekly` / `monthly`, `stop`), silent without news; possible namesakes
+  reported separately with the reason.
 - An album already in the library is no longer replaced silently: the bot compares
   both passports and asks (`REPLACE_ACTION`, `ask` in the bot, `replace` on the CLI).
 

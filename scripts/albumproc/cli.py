@@ -9,14 +9,19 @@ Command line:
                                              apply a saved plan
   album_processor.py --quality [QUERY]       mastering passports: the most crushed
                                              albums, or the albums matching QUERY
+  album_processor.py --releases [check|due|status|daily|weekly|monthly|stop]
+                                             new albums of the library's artists (Deezer):
+                                             check now, run a scheduled check if due,
+                                             show or set the schedule
 """
 
+import datetime
 import json
 import logging
 import sys
 from pathlib import Path
 
-from . import config, library, pipeline, quality
+from . import config, library, pipeline, quality, releases
 
 log = logging.getLogger("albumproc")
 
@@ -70,11 +75,38 @@ def _fix_library(args: list[str]) -> int:
     return 0
 
 
+def _releases(action: str) -> int:
+    now = datetime.datetime.now()
+    if action in releases.SCHEDULES or action == "stop":
+        state = releases.set_schedule(None if action == "stop" else action)
+        print(releases.status(state, now))
+    elif action == "status":
+        print(releases.status(releases.load_state(), now))
+    elif action == "due":
+        # Scheduled: silent unless a check is due and finds something
+        if releases.is_due(releases.load_state(), now):
+            news, state = releases.check(now.date())
+            text = releases.report(news, state, quiet=True)
+            if text:
+                print(text)
+    elif action == "check":
+        news, state = releases.check(now.date())
+        print(releases.report(news, state))
+    else:
+        print(f"Неизвестное действие: {action}. Есть: check, status, daily, weekly, monthly, stop.")
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     argv = sys.argv[1:] if argv is None else argv
+    # --releases prints a message for the bot on stdout: its log goes to stderr
+    logging.basicConfig(level=logging.INFO, format="%(message)s",
+                        stream=sys.stderr if argv[:1] == ["--releases"] else sys.stdout)
     if argv and argv[0] == "--fix-library":
         return _fix_library(argv[1:])
+    if argv and argv[0] == "--releases":
+        return _releases(argv[1] if len(argv) > 1 else "check")
     if argv and argv[0] == "--quality":
         print("\n".join(quality.library_report(" ".join(argv[1:]))))
         return 0
