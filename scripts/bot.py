@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Optional
 
 try:
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+    from telegram import BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
     from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 except ImportError:
     sys.exit("Error: python-telegram-bot is not installed.")
@@ -576,17 +576,33 @@ async def on_fix_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # Entry point
 # ---------------------------------------------------------------------------
 
+# Commands: their handlers and the bot's "/" menu come from this one list
+COMMANDS = [
+    ("newalbum", "Обработать новые альбомы из загрузок", cmd_newalbum),
+    ("fixlibrary", "Проверить медиатеку и исправить (fixlibrary all — со сверкой по Discogs)", cmd_fixlibrary),
+    ("quality", "Паспорт мастеринга (quality <название> — подробно)", cmd_quality),
+    ("help", "Список команд", cmd_help),
+]
+
+
+async def _set_menu(app: Application) -> None:
+    """Show the commands in the "/" menu — in the owner's chat only, strangers get no menu."""
+    try:
+        await app.bot.set_my_commands([BotCommand(name, description) for name, description, _ in COMMANDS],
+                                      scope=BotCommandScopeChat(ALLOWED_ID))
+    except Exception:  # noqa: BLE001 — the menu is a convenience, the bot works without it
+        log.exception("Failed to set the command menu")
+
+
 def main() -> None:
     if not BOT_TOKEN:
         sys.exit("Error: BOT_TOKEN environment variable is not set.")
     if not ALLOWED_ID:
         sys.exit("Error: ALLOWED_ID environment variable is not set.")
 
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("help",      cmd_help))
-    app.add_handler(CommandHandler("newalbum",  cmd_newalbum))
-    app.add_handler(CommandHandler("fixlibrary", cmd_fixlibrary))
-    app.add_handler(CommandHandler("quality",   cmd_quality))
+    app = Application.builder().token(BOT_TOKEN).post_init(_set_menu).build()
+    for name, _, handler in COMMANDS:
+        app.add_handler(CommandHandler(name, handler))
     app.add_handler(CallbackQueryHandler(on_fix_decision, pattern=r"^fx:"))
     app.add_handler(CallbackQueryHandler(on_upconvert_decision, pattern=r"^up:"))
 

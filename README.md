@@ -194,6 +194,8 @@ To update: `git pull && docker compose up -d --build`.
 | `/quality <name>` | Passports of the albums matching the name, track by track. |
 | `/help` | List the commands. |
 
+The bot fills its `/` command menu itself on start — in your chat only; no BotFather setup needed.
+
 ### Command line
 
 The same engine without Telegram, e.g. `docker compose exec album-processor …`:
