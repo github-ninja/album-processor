@@ -1,0 +1,9 @@
+av==19.0.1
+matplotlib==3.11.2
+mutagen==1.47.0
+numpy==2.5.4
+pillow==12.3.0
+python-telegram-bot==22.6
+requests==2.32.5
+soundfile==0.14.0
+soxr==0.5.0.post1

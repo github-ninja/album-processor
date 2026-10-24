@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Dependencies installed by the self-hosted setup (bind-mounted as /libs)
+libs/
+
+# Secrets
+.env

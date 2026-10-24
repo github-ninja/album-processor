@@ -1,0 +1,15 @@
+services:
+  album-processor:
+    build: .
+    image: album-processor
+    container_name: album-processor
+    restart: unless-stopped
+    # The uid:gid that owns your downloads and music folders
+    user: "1000:1000"
+    env_file: .env
+    environment:
+      DOWNLOADS_PATH: /downloads
+      MUSIC_PATH: /music
+    volumes:
+      - ${DOWNLOADS_DIR}:/downloads
+      - ${MUSIC_DIR}:/music
