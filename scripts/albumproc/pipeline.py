@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from . import audioformat, config, covers, cue, discogs, replaygain, upconvert
+from . import audioformat, config, covers, cue, discogs, quality, replaygain, upconvert
 from .files import (
     album_audio_files, disc_dir_number, find_or_create_artist_dir, is_album_dir, move_aside,
     normalize_permissions, remove_non_music_files, safe_rename,
@@ -349,22 +349,38 @@ def process_tracks(album_path: Path, info: AlbumInfo) -> None:
             sub.rmdir()
 
 
+def _destination(info: AlbumInfo) -> Path:
+    return find_or_create_artist_dir(info.artist) / album_folder_name(info.year, info.album)
+
+
+def library_copies(album_path: Path, info: AlbumInfo) -> list[Path]:
+    """
+    The album already in the library, maybe under another year or case
+    ("2020 - Hybrid Theory" vs "2000 - Hybrid Theory").
+    """
+    dest = _destination(info)
+    if not dest.parent.is_dir():
+        return []
+    return [existing for existing in sorted(dest.parent.iterdir())
+            if existing.is_dir() and existing.resolve() != album_path.resolve()
+            and album_identity(existing.name) == album_identity(dest.name)]
+
+
 def move_to_library(album_path: Path, info: AlbumInfo) -> Path:
-    """Move the album to <MUSIC_PATH>/<artist>/<YYYY - Album>; returns the new path."""
+    """
+    Move the album to <MUSIC_PATH>/<artist>/<YYYY - Album>, moving an older
+    copy of it aside; returns the new path.
+    """
     log.info("📦 Moving to music library…")
-    dest = find_or_create_artist_dir(info.artist) / album_folder_name(info.year, info.album)
+    dest = _destination(info)
     if album_path.resolve() == dest.resolve():
         log.info("✅ Already in destination: %s", dest)
         return dest
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    # The album may already be in the library under another year or case
-    # ("2020 - Hybrid Theory" vs "2000 - Hybrid Theory"): the new version replaces it
-    for existing in sorted(dest.parent.iterdir()):
-        if (existing.is_dir() and existing.resolve() != album_path.resolve()
-                and album_identity(existing.name) == album_identity(dest.name)):
-            aside = move_aside(existing)
-            log.warning("  ⚠️  Album already in the library — old version moved to %s", aside)
+    for existing in library_copies(album_path, info):
+        aside = move_aside(existing)
+        log.warning("  ⚠️  Album already in the library — old version moved to %s", aside)
     shutil.move(str(album_path), str(dest))
     normalize_permissions(dest.parent)
     log.info("✅ Moved to: %s", dest)
@@ -398,8 +414,10 @@ def process_album(candidate: AlbumCandidate, state: RunState) -> Optional[bool]:
     2. Artist, title, year, genre, tracklist (Discogs, else folder/tags)
     3. Cover art: Deezer or the download's own, normalised and embedded
     4. Remove non-music files
-    5. Rename & tag all tracks, ReplayGain included
-    6. Move to the library as <artist>/<YYYY - Album>
+    5. Rename & tag all tracks, ReplayGain included; mastering passport
+    6. Move to the library as <artist>/<YYYY - Album> — or, when the album is
+       already there and REPLACE_ACTION is "ask", leave it in downloads with
+       both passports for the user to compare
     7. Clean up the empty download folder
 
     Returns True on success, False on failure, None when the album was left
@@ -436,7 +454,26 @@ def process_album(candidate: AlbumCandidate, state: RunState) -> Optional[bool]:
     remove_non_music_files(album_path)
     process_tracks(album_path, info)
     replaygain.tag_album(album_audio_files(album_path))
-    move_to_library(album_path, info)
+    measured = quality.passport(album_path)
+
+    copies = library_copies(album_path, info)
+    if copies and config.REPLACE_ACTION == "ask":
+        old = quality.passport(copies[0])
+        log.warning("⏸️  Альбом уже есть в медиатеке — ждёт решения: %s", copies[0].relative_to(config.MUSIC_PATH))
+        log.info("   было:  %s\n   новое: %s", quality.summary(old), quality.summary(measured))
+        state.deferred.append({
+            "kind": "replace",
+            "path": str(album_path),
+            "existing": str(copies[0].relative_to(config.MUSIC_PATH)),
+            "old": quality.summary(old),
+            "new": quality.summary(measured),
+        })
+        return None
+
+    dest = move_to_library(album_path, info)
+    quality.remember(dest, measured)
+    for line in quality.describe(measured):
+        log.info(line)
     _cleanup_empty_download_dir(candidate.artist)
 
     log.info("✅ Album processed successfully!")

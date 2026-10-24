@@ -1,12 +1,14 @@
 """Tags, covers and spectral analysis on real (synthetic) files."""
 
+import json
 import os
+from unittest import mock
 
 import numpy as np
 import soundfile as sf
 from mutagen.flac import FLAC
 
-from albumproc import audioformat, covers, replaygain, tags, upconvert
+from albumproc import audioformat, covers, quality, replaygain, tags, upconvert
 from albumproc.tags import TrackMetadata
 from mutagen.mp4 import MP4Cover
 
@@ -179,3 +181,41 @@ class ReplayGain(TempLibraryCase):
         self.assertEqual(FLAC(quiet)["replaygain_album_gain"], FLAC(loud)["replaygain_album_gain"])
         self.assertAlmostEqual(float(FLAC(loud)["replaygain_track_peak"][0]), 10 ** (-13 / 20), delta=0.005)
         self.assertTrue(replaygain.has_replaygain([quiet, loud]))
+
+
+class MasteringPassport(TempLibraryCase):
+    def sine(self, name, gain):
+        """10 s stereo 1 kHz sine, *gain* times full scale, hard-clipped at full scale."""
+        t = np.arange(441000) / 44100
+        wave = np.clip(gain * np.sin(2 * np.pi * 1000 * t), -1, 32767 / 32768)
+        sf.write(self.tmp / name, np.stack([wave, wave], axis=1), 44100, subtype="PCM_16")
+        return self.tmp / name
+
+    def test_dr_and_flat_tops(self):
+        clean = quality.measure_track(self.sine("clean.flac", 0.5))
+        clipped = quality.measure_track(self.sine("clipped.flac", 4))
+        self.assertAlmostEqual(clean["dr"], 0, delta=0.2)  # a sine's peak is √2 × its RMS: DR 0
+        self.assertEqual(clean["clips"], 0)
+        self.assertGreater(clipped["clips"], 10000)       # every half-wave is a flat top
+        noise = quality.measure_track(make_flac(self.tmp / "noise.flac", seconds=12))
+        self.assertGreater(noise["dr"], 8)                # Gaussian noise: crest factor ~4.5σ
+        self.assertEqual(noise["seconds"], 12.0)
+
+    def test_grades(self):
+        passport = lambda dr, clips: {"tracks": [{"dr": dr, "clips": clips, "seconds": 60}]}  # noqa: E731
+        self.assertEqual(quality.grade(passport(11, 0)), "🟢")
+        self.assertEqual(quality.grade(passport(7, 0)), "🟡")
+        self.assertEqual(quality.grade(passport(11, 20)), "🟡")
+        self.assertEqual(quality.grade(passport(4, 0)), "🔴")
+        self.assertEqual(quality.grade(passport(8, 500)), "🔴")
+        self.assertEqual(quality.grade(passport(11, 500)), "🟡")   # open master, shaved peaks
+
+    def test_passport_follows_the_audio_not_the_name(self):
+        album = self.music / "Plaid" / "2003 - Spokes"
+        make_flac(album / "01. Plaid - Even Spring.flac", seconds=4)
+        first = quality.passport(album)
+        renamed = album.rename(self.music / "Plaid" / "2003 - Spokes (renamed)")
+        with mock.patch.object(quality, "measure_album") as measure:
+            self.assertEqual(quality.passport(renamed), first)
+            measure.assert_not_called()
+        self.assertEqual(list(json.loads(quality.store_path().read_text())), ["Plaid/2003 - Spokes (renamed)"])

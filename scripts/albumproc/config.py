@@ -20,10 +20,18 @@ TARGET_RATE = 44100
 # What to do with an album that looks like a lossy→lossless upconvert:
 #   "warn" — log a warning and process as usual (default)
 #   "skip" — leave the album in downloads untouched
-#   "ask"  — leave it untouched and list it in UPCONVERT_REPORT_FILE so the
+#   "ask"  — leave it untouched and list it in DEFERRED_REPORT_FILE so the
 #            Telegram bot can ask the user what to do
 UPCONVERT_ACTION = os.environ.get("UPCONVERT_ACTION", "warn").strip().lower()
-UPCONVERT_REPORT_FILE = os.environ.get("UPCONVERT_REPORT_FILE", "")
+
+# What to do with an album that is already in the library (maybe under another year):
+#   "replace" — move the old copy aside and put the new one in place (default)
+#   "ask"     — leave the processed album in downloads and list it, with both
+#               mastering passports, in DEFERRED_REPORT_FILE for the bot
+REPLACE_ACTION = os.environ.get("REPLACE_ACTION", "replace").strip().lower()
+
+# JSON list of the albums left in downloads for the user to decide on (set by the bot)
+DEFERRED_REPORT_FILE = os.environ.get("DEFERRED_REPORT_FILE", "")
 
 # Optional Discogs personal access token: raises the rate limit from 25 to 60 req/min
 DISCOGS_TOKEN = os.environ.get("DISCOGS_TOKEN", "")

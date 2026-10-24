@@ -6,6 +6,13 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Mastering passport: DR (TT DR Meter method), hard-clipping flat tops, loudness and
+  true peak for every album, with a 🟢/🟡/🔴 grade in the import report.
+- `/quality` (CLI `--quality`): the most crushed albums, or one album track by track.
+- An album already in the library is no longer replaced silently: the bot compares
+  both passports and asks (`REPLACE_ACTION`, `ask` in the bot, `replace` on the CLI).
+
 ### Changed
 - `requirements.txt` pins the full dependency tree; direct dependencies moved to `requirements.in`.
 

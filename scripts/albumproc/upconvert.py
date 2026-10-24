@@ -240,6 +240,7 @@ def describe(report: UpconvertReport) -> str:
 def deferred_entry(album_path: Path, report: UpconvertReport) -> dict:
     """Record of an album left for the user to decide on (read by the Telegram bot)."""
     return {
+        "kind": "upconvert",
         "path": str(album_path),
         "verdict": report.verdict,
         "confident": report.confident,

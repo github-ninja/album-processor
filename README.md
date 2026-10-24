@@ -67,6 +67,19 @@ with any player that reads tags.
 - Fetched from Deezer when it has this exact album, else the download's own art;
   never upscaled; a small cover is upgraded only when Deezer has the same image larger.
 
+**Mastering passport — `/quality`**
+- Every album is measured once: DR (the TT DR Meter method of
+  dr.loudness-war.info), flat tops left by hard clipping, loudness and true peak.
+- A grade per album: 🟢 open, 🟡 dense or traces of clipping, 🔴 crushed master —
+  shown in the import report with the worst track named.
+- `/quality` lists the library's most crushed albums; `/quality <name>` shows an
+  album's passport track by track.
+- A download of an album already in the library is not swapped in silently:
+  the bot shows both passports side by side and asks — *Replace / Keep / Delete the new one*.
+- Stored in `music/.album_processor/quality.json`, never in the tags; tied to the
+  audio itself (FLAC's MD5 of the decoded samples), so renames keep a passport
+  and a new edition gets a new one.
+
 **Library maintenance — `/fixlibrary`**
 - Checks every album against the conventions and shows a plan before touching
   anything: apply all, go through it one by one, or cancel.
@@ -94,8 +107,10 @@ For every album found in the downloads folder:
 4. **Cover** — Deezer or the download's own art, normalised and embedded.
 5. **Clean** — non-music files removed.
 6. **Tag and rename** every track: `NN. Artist - Title.flac`, credits resolved.
-7. **ReplayGain** — loudness of every track and of the album (tracks measured in parallel).
-8. **Move** to `music/<Album artist>/<YYYY - Album>/`; an older copy of the same album is moved aside.
+7. **ReplayGain and passport** — loudness of every track and of the album, DR and clipping (tracks measured in parallel).
+8. **Move** to `music/<Album artist>/<YYYY - Album>/`. If the album is already in
+   the library, the bot first shows both passports and asks (`REPLACE_ACTION`);
+   a replaced copy is moved aside, not deleted.
 
 The bot only starts `album_processor.py` and talks to you; all the work is
 done by the `albumproc` package, which can also be used from the command line.
@@ -160,6 +175,7 @@ To update: `git pull && docker compose up -d --build`.
 | `MUSIC_PATH` | | `/mnt/data/music` | Library folder inside the container |
 | `DISCOGS_TOKEN` | | — | Discogs personal token (higher rate limit) |
 | `UPCONVERT_ACTION` | | `ask` | Suspected upconverts: `ask` (bot asks), `warn` (process anyway), `skip` (leave in downloads) |
+| `REPLACE_ACTION` | | `ask` | An album already in the library: `ask` (bot compares passports and asks), `replace` (swap it in) |
 | `TZ` | | UTC | Time zone for logs |
 
 `docker-compose.yml` maps `DOWNLOADS_DIR` and `MUSIC_DIR` from `.env` to
@@ -174,6 +190,8 @@ To update: `git pull && docker compose up -d --build`.
 | `/newalbum` | Process every new album in the downloads folder and report what was done. |
 | `/fixlibrary` | Check the library, show the plan; apply all, one by one, or cancel. |
 | `/fixlibrary all` | The same plus a Discogs title check of every album (slow: Discogs rate limit). |
+| `/quality` | Mastering passports: the most crushed albums of the library. |
+| `/quality <name>` | Passports of the albums matching the name, track by track. |
 | `/help` | List the commands. |
 
 ### Command line
@@ -185,12 +203,14 @@ python album_processor.py                       # process all new albums in down
 python album_processor.py "<album folder>"…     # process the given folders
 python album_processor.py --fix-library [--all] --plan-out plan.json   # check, save the plan
 python album_processor.py --fix-library --apply plan.json              # apply a (reviewed) plan
+python album_processor.py --quality ["<name>"]                         # mastering passports
 ```
 
 ### Recovering from a mistake
 
 - `music/.album_processor/fixes.jsonl` — every library change with its old values.
 - `music/.album_processor/replaced/<run>/` — albums and covers that were replaced.
+- `music/.album_processor/quality.json` — mastering passports (rebuilt by `/quality` if lost).
 
 ## Development
 
@@ -209,6 +229,7 @@ scripts/
 │   ├── cue.py            splitting album images by CUE sheet
 │   ├── audioformat.py    decoding (PyAV) and conversion to FLAC 16/44.1
 │   ├── replaygain.py     EBU R128 loudness and true peaks
+│   ├── quality.py        mastering passport: DR, clipping, grades, /quality
 │   ├── upconvert.py      spectral detection of lossy sources
 │   ├── files.py          filesystem helpers and the journal
 │   ├── config.py         settings from environment variables

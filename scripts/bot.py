@@ -9,11 +9,14 @@ Environment variables (required):
 Environment variables (optional):
   UPCONVERT_ACTION — passed to the processor; defaults to "ask", which makes
                      the bot ask what to do with every suspected upconvert
+  REPLACE_ACTION   — likewise for an album already in the library ("ask": the bot
+                     compares both mastering passports and asks)
 
 Commands:
   /newalbum   — scan downloads and process all new albums
   /fixlibrary — check the library (names, tags, covers, format, ReplayGain) and fix deviations
                 ("/fixlibrary all" also checks every album title against Discogs)
+  /quality    — mastering passports: the most crushed albums, or "/quality <name>"
   /help       — show available commands
 """
 
@@ -51,6 +54,7 @@ ALLOWED_ID = int(os.environ.get("ALLOWED_ID", "0"))
 PROCESSOR_SCRIPT = str(Path(__file__).with_name("album_processor.py"))
 DOWNLOADS_PATH = Path(os.environ.get("DOWNLOADS_PATH", "/mnt/data/downloads"))
 UPCONVERT_ACTION = os.environ.get("UPCONVERT_ACTION", "ask")
+REPLACE_ACTION = os.environ.get("REPLACE_ACTION", "ask")
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -118,10 +122,11 @@ def _display_path(path: Path) -> str:
 
 
 def _decision_keyboard(key: str) -> InlineKeyboardMarkup:
+    replace = _pending[key].get("kind") == "replace"
     rows = [[
-        InlineKeyboardButton("✅ Обработать", callback_data=f"up:proc:{key}"),
+        InlineKeyboardButton("🔁 Заменить" if replace else "✅ Обработать", callback_data=f"up:proc:{key}"),
         InlineKeyboardButton("⏭ Оставить", callback_data=f"up:keep:{key}"),
-        InlineKeyboardButton("🗑 Удалить", callback_data=f"up:del:{key}"),
+        InlineKeyboardButton("🗑 Удалить новое" if replace else "🗑 Удалить", callback_data=f"up:del:{key}"),
     ]]
     if _SPECTROGRAM_AVAILABLE and len(_pending[key].get("tracks", [])) > 1:
         rows.append([InlineKeyboardButton("📊 Другой трек", callback_data=f"up:tracks:{key}")])
@@ -175,10 +180,21 @@ async def _edit_text(query, text: str) -> None:
         await query.edit_message_text(text, parse_mode="HTML")
 
 
-async def _ask_about_upconverts(message: Message, entries: list[dict]) -> None:
+async def _ask_about_deferred(message: Message, entries: list[dict]) -> None:
     for entry in entries:
         key = uuid.uuid4().hex[:12]
         _pending[key] = entry
+        if entry.get("kind") == "replace":
+            existing = entry["existing"].replace("/", " — ", 1)
+            text = (
+                f"♊ <b>Альбом уже есть в медиатеке</b>\n"
+                f"📀 {html.escape(existing)}\n"
+                f"было:  {html.escape(entry['old'])}\n"
+                f"новое: {html.escape(entry['new'])}\n\n"
+                "Заменить? Старая версия не удаляется, а уходит в .album_processor/replaced."
+            )
+            await message.reply_text(text, parse_mode="HTML", reply_markup=_decision_keyboard(key))
+            continue
         title = "Вероятный апконверт" if entry["confident"] else "Возможный апконверт"
         text = (
             f"🚩 <b>{title}</b>\n"
@@ -219,11 +235,33 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/newalbum — обработать новые альбомы из папки загрузок\n"
         "/fixlibrary — проверить библиотеку (названия, теги, обложки, формат) и исправить\n"
         "/fixlibrary all — то же, плюс сверить с Discogs названия всех альбомов (долго)\n"
+        "/quality — паспорт мастеринга: самые пережатые альбомы; /quality <название> — подробно\n"
         "/help     — это сообщение\n\n"
         "Образ альбома с CUE режется на треки; хайрез, ALAC, APE и WAV приводятся к FLAC 16/44.1. "
         "Теги и обложка — по Discogs и Deezer, громкость — ReplayGain. "
-        "Если альбом похож на апконверт из MP3, бот спросит, что с ним делать."
+        "Если альбом похож на апконверт из MP3 или уже есть в медиатеке, бот спросит, что с ним делать."
     )
+
+
+async def _process(message: Message, args: list[str], env: dict[str, str]) -> None:
+    """Run the processor, report its output, then ask about the albums it left in downloads."""
+    with tempfile.TemporaryDirectory() as tmp:
+        report_file = Path(tmp) / "deferred.json"
+        try:
+            result = await _run_processor(args, {"REPLACE_ACTION": REPLACE_ACTION, **env,
+                                                 "DEFERRED_REPORT_FILE": str(report_file)})
+        except Exception as exc:
+            await message.reply_text(f"❌ Не удалось запустить скрипт:\n{exc}")
+            log.exception("Failed to run processor")
+            return
+        try:
+            deferred = json.loads(report_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            deferred = []
+
+    await _reply_with_output(message, result)
+    await _ask_about_deferred(message, deferred)
+    log.info("Processor finished with return code %d", result.returncode)
 
 
 async def cmd_newalbum(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -232,28 +270,35 @@ async def cmd_newalbum(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     await update.message.reply_text("⏳ Запускаю обработку альбомов…")
     log.info("Processing triggered by user %d", ALLOWED_ID)
+    await _process(update.message, [], {"UPCONVERT_ACTION": UPCONVERT_ACTION})
 
-    with tempfile.TemporaryDirectory() as tmp:
-        report_file = Path(tmp) / "upconverts.json"
-        try:
-            result = await _run_processor([], {
-                "UPCONVERT_ACTION": UPCONVERT_ACTION,
-                "UPCONVERT_REPORT_FILE": str(report_file),
-            })
-        except Exception as exc:
-            await update.message.reply_text(f"❌ Не удалось запустить скрипт:\n{exc}")
-            log.exception("Failed to run processor")
-            return
 
-        try:
-            deferred = json.loads(report_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            deferred = []
+async def cmd_quality(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update):
+        return
 
-    await _reply_with_output(update.message, result)
-    await _ask_about_upconverts(update.message, deferred)
-
-    log.info("Processor finished with return code %d", result.returncode)
+    query = " ".join(context.args or [])
+    await update.message.reply_text("⏳ Собираю паспорта мастеринга… Новые альбомы придётся измерить, это может занять время.")
+    try:
+        result = await _run_processor(["--quality", *([query] if query else [])], {})
+    except Exception as exc:
+        await update.message.reply_text(f"❌ Не удалось запустить скрипт:\n{exc}")
+        log.exception("Failed to run processor")
+        return
+    if result.returncode != 0:
+        await _reply_with_output(update.message, result)
+        return
+    # Progress lines ("📏 album being measured") are not part of the report
+    text = "\n".join(line for line in result.stdout.strip().splitlines() if not line.startswith("📏"))
+    chunks, current = [], ""
+    for line in text.splitlines():
+        if len(current) + len(line) > 3800:
+            chunks.append(current)
+            current = ""
+        current += line + "\n"
+    chunks.append(current)
+    for chunk in chunks:
+        await update.message.reply_text(f"<pre>{html.escape(chunk.rstrip())}</pre>", parse_mode="HTML")
 
 
 async def on_upconvert_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -326,15 +371,12 @@ async def on_upconvert_decision(update: Update, context: ContextTypes.DEFAULT_TY
         await _edit_text(query, f"🗑 Удалён: {name}")
 
     elif action == "proc":
-        await _edit_text(query, f"⏳ Обрабатываю: {name}")
-        log.info("Processing suspected upconvert on user request: %s", path)
-        try:
-            result = await _run_processor([str(path)], {"UPCONVERT_ACTION": "warn"})
-        except Exception as exc:
-            await query.message.reply_text(f"❌ Не удалось запустить скрипт:\n{exc}")
-            log.exception("Failed to run processor")
-            return
-        await _reply_with_output(query.message, result)
+        replace = entry.get("kind") == "replace"
+        await _edit_text(query, f"⏳ {'Заменяю' if replace else 'Обрабатываю'}: {name}")
+        log.info("Processing %s on user request: %s", entry.get("kind", "upconvert"), path)
+        # An approved upconvert may still turn out to be in the library: then it is asked about again
+        await _process(query.message, [str(path)],
+                       {"UPCONVERT_ACTION": "warn", **({"REPLACE_ACTION": "replace"} if replace else {})})
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +586,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help",      cmd_help))
     app.add_handler(CommandHandler("newalbum",  cmd_newalbum))
     app.add_handler(CommandHandler("fixlibrary", cmd_fixlibrary))
+    app.add_handler(CommandHandler("quality",   cmd_quality))
     app.add_handler(CallbackQueryHandler(on_fix_decision, pattern=r"^fx:"))
     app.add_handler(CallbackQueryHandler(on_upconvert_decision, pattern=r"^up:"))
 

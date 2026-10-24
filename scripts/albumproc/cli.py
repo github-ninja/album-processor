@@ -7,6 +7,8 @@ Command line:
                                              check the library, print/save a plan
   album_processor.py --fix-library --apply FILE
                                              apply a saved plan
+  album_processor.py --quality [QUERY]       mastering passports: the most crushed
+                                             albums, or the albums matching QUERY
 """
 
 import json
@@ -14,7 +16,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import config, library, pipeline
+from . import config, library, pipeline, quality
 
 log = logging.getLogger("albumproc")
 
@@ -34,8 +36,8 @@ def _process(paths: list[str]) -> int:
     results = [pipeline.process_album(candidate, state) for candidate in candidates]
     failed, deferred = results.count(False), results.count(None)
 
-    if config.UPCONVERT_REPORT_FILE:
-        Path(config.UPCONVERT_REPORT_FILE).write_text(json.dumps(state.deferred, ensure_ascii=False), encoding="utf-8")
+    if config.DEFERRED_REPORT_FILE:
+        Path(config.DEFERRED_REPORT_FILE).write_text(json.dumps(state.deferred, ensure_ascii=False), encoding="utf-8")
     if state.flagged:
         # Repeated at the end: the Telegram bot only shows the tail of long logs
         log.warning("\n🚩 Подозрение на апконверт (%d):", len(state.flagged))
@@ -73,4 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "--fix-library":
         return _fix_library(argv[1:])
+    if argv and argv[0] == "--quality":
+        print("\n".join(quality.library_report(" ".join(argv[1:]))))
+        return 0
     return _process(argv)

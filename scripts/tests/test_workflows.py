@@ -1,11 +1,12 @@
 """End-to-end: processing a download and fixing a library, with the network mocked."""
 
+import json
 import os
 from unittest import mock
 
 from mutagen.flac import FLAC
 
-from albumproc import config, covers, discogs, library, pipeline, replaygain
+from albumproc import config, covers, discogs, library, pipeline, quality, replaygain
 from tests.helpers import TempLibraryCase, make_flac, make_image, make_m4a
 
 DISCOGS_ALBUM = {
@@ -86,6 +87,25 @@ class ProcessDownload(TempLibraryCase):
         self.assertTrue(self.run_pipeline())
         replaced = list((config.state_dir() / "replaced").rglob("old.flac"))
         self.assertEqual(len(replaced), 1)
+
+    def test_album_already_in_library_waits_for_a_decision_in_ask_mode(self):
+        old = self.music / "Dissident" / "2017 - Antrakt"
+        make_flac(old / "01. Dissident & Cyberworm - Zerkalo.flac", seconds=4)
+        state = pipeline.RunState()
+        with mock.patch.object(config, "REPLACE_ACTION", "ask"):
+            self.assertIsNone(pipeline.process_album(pipeline.find_new_albums()[0], state))
+        entry = state.deferred[0]
+        self.assertEqual((entry["kind"], entry["existing"]), ("replace", "Dissident/2017 - Antrakt"))
+        self.assertIn("DR", entry["old"])
+        self.assertIn("DR", entry["new"])
+        self.assertEqual([p.name for p in old.iterdir()], ["01. Dissident & Cyberworm - Zerkalo.flac"])
+        self.assertTrue(self.album.is_dir())  # processed, waiting in downloads
+
+    def test_passport_is_kept_for_the_new_album(self):
+        self.assertTrue(self.run_pipeline())
+        store = json.loads(quality.store_path().read_text())
+        self.assertEqual(list(store), ["Dissident/2017 - Antrakt"])
+        self.assertEqual(len(store["Dissident/2017 - Antrakt"]["tracks"]), 2)
 
     def test_same_album_under_another_year_or_case_is_replaced(self):
         old = self.music / "Dissident" / "2020 - antrakt"
