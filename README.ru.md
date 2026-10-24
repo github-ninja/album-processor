@@ -202,6 +202,10 @@ pip install -r requirements.txt
 python -B -m unittest discover -s tests -t .
 ```
 
+`requirements.in` — прямые зависимости; `requirements.txt` фиксирует всё дерево
+версий для воспроизводимой установки (образ Docker, CI). Обновление: поставить
+`requirements.in` в чистое окружение, прогнать тесты, `pip freeze > requirements.txt`.
+
 ## Ограничения
 
 - Один пользователь на бота; одна обработка за раз.

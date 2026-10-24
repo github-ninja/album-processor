@@ -224,6 +224,10 @@ pip install -r requirements.txt
 python -B -m unittest discover -s tests -t .
 ```
 
+`requirements.in` lists the direct dependencies; `requirements.txt` pins the
+whole tree for reproducible installs (Docker image, CI). To update: install
+`requirements.in` into a fresh environment, run the tests, `pip freeze > requirements.txt`.
+
 Dependencies: [PyAV](https://github.com/PyAV-Org/PyAV) (FFmpeg decoders and the
 EBU R128 meter, bundled — no system FFmpeg needed), python-soxr, soundfile,
 mutagen, NumPy, Pillow, matplotlib, requests, python-telegram-bot.

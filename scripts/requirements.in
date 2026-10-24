@@ -1,0 +1,12 @@
+# Direct dependencies. requirements.txt pins these and everything they pull in;
+# to update: pip install -r requirements.in into a fresh environment, test,
+# then pip freeze > requirements.txt
+av
+matplotlib
+mutagen
+numpy
+pillow
+python-telegram-bot
+requests
+soundfile
+soxr
