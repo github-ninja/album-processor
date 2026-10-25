@@ -12,8 +12,9 @@ Checks per album:
   - tag hygiene: invisible characters and stray whitespace, genre spelling
     and splitting, TRACKTOTAL/DISCTOTAL convention, disc numbers, missing
     album artist or genre, artist spelling consistent across the library
-  - cover: Cover.jpg at COVER_SIZE², the same image embedded in every track,
-    no stray cover files; small covers are upgraded from Deezer when the
+  - cover: Cover.jpg at COVER_SIZE², a copy in every disc folder (one placed
+    there by hand is kept), the same image embedded in every track, no stray
+    cover files; small covers are upgraded from Deezer when the
     same artwork exists there in a higher resolution
   - audio format: FLAC that isn't 16/44.1 is converted
   - ReplayGain tags (track and album) where missing or after a conversion
@@ -305,13 +306,21 @@ def _choose_cover(album_dir: Path, files: list[Path], artist: str, album: str) -
     return final, origin, size
 
 
-def _cover_changes(album_dir: Path, files: list[Path], final: bytes) -> tuple[bool, list[str], list[Path]]:
-    """(Cover.jpg needs rewriting, stray cover files, tracks whose embedded art differs)."""
+def _cover_changes(album_dir: Path, files: list[Path], final: bytes) -> tuple[bool, list[str], list[Path], list[Path]]:
+    """
+    (Cover.jpg needs rewriting, stray cover files, tracks whose embedded art
+    differs, disc-folder copies to write: missing ones, and copies of the old
+    Cover.jpg when it changes — a disc cover unlike it was placed by hand).
+    """
     cover_file = album_dir / config.COVER_NAME
-    rewrite = not (cover_file.exists() and cover_file.read_bytes() == final)
-    stray = [str(f.relative_to(album_dir)) for f in covers.cover_like_files(album_dir) if f != cover_file]
+    current = cover_file.read_bytes() if cover_file.exists() else None
+    rewrite = current != final
+    disc_covers = covers.disc_cover_files(album_dir)
+    stray = [str(f.relative_to(album_dir)) for f in covers.cover_like_files(album_dir)
+             if f != cover_file and f not in disc_covers]
     stale = [f for f in files if get_embedded_picture(f) != final]
-    return rewrite, stray, stale
+    copies = [f for f in disc_covers if not f.exists() or (rewrite and f.read_bytes() == current)]
+    return rewrite, stray, stale, copies
 
 
 def _plan_cover(album_dir: Path, files: list[Path], artist: str, album: str) -> Optional[dict]:
@@ -319,8 +328,8 @@ def _plan_cover(album_dir: Path, files: list[Path], artist: str, album: str) -> 
     final, origin, size = _choose_cover(album_dir, files, artist, album)
     if final is None:
         return None
-    rewrite, stray, stale = _cover_changes(album_dir, files, final)
-    if not (rewrite or stray or stale):
+    rewrite, stray, stale, copies = _cover_changes(album_dir, files, final)
+    if not (rewrite or stray or stale or copies):
         return None
     final_size = covers.image_size(final)
     return {
@@ -329,6 +338,7 @@ def _plan_cover(album_dir: Path, files: list[Path], artist: str, album: str) -> 
         "to_size": list(final_size) if final_size else None,
         "rewrite_cover": rewrite,
         "embed": len(stale),
+        "disc_copies": len(copies),
         "remove": stray,
     }
 
@@ -486,18 +496,21 @@ def _apply_cover(album_dir: Path, files: list[Path], artist: str, album: str) ->
     final, origin, _ = _choose_cover(album_dir, files, artist, album)
     if final is None:
         return None
-    rewrite, stray, stale = _cover_changes(album_dir, files, final)
+    rewrite, stray, stale, copies = _cover_changes(album_dir, files, final)
     cover_file = album_dir / config.COVER_NAME
     if rewrite:
         if cover_file.exists():
             move_aside(cover_file)
         cover_file.write_bytes(final)
+    for f in copies:
+        f.write_bytes(final)
     for rel in stray:
         move_aside(album_dir / rel)
     for f in stale:
         embed_picture(f, final)
     size = "×".join(map(str, covers.image_size(final) or ()))
-    return f"{origin}, {size}, встроена в {len(stale)} файл(ов)"
+    return f"{origin}, {size}, встроена в {len(stale)} файл(ов)" + (
+        f", копий в папках дисков: {len(copies)}" if copies else "")
 
 
 def apply_library_fixes(plan: list[dict]) -> int:
@@ -561,6 +574,10 @@ def apply_library_fixes(plan: list[dict]) -> int:
                 renamed += 1
             if renamed:
                 log.info("  📝 Файлов переименовано: %d", renamed)
+            # Disc folders made by the renames (a flat album split into CD1, CD2…) get their cover copy
+            copied = covers.copy_to_discs(album_dir)
+            if copied:
+                log.info("  🖼️  Копий обложки в папках дисков: %d", copied)
 
             # Artist folder: reuse an existing one; a case-only difference renames it
             artist_dir = find_dir_case_insensitive(config.MUSIC_PATH, new_artist)

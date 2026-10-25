@@ -7,6 +7,7 @@ from unittest import mock
 from mutagen.flac import FLAC
 
 from albumproc import config, covers, discogs, library, pipeline, quality, replaygain
+from albumproc.files import album_audio_files
 from tests.helpers import TempLibraryCase, make_flac, make_image, make_m4a
 
 DISCOGS_ALBUM = {
@@ -452,6 +453,46 @@ class MultiDiscDownloads(TempLibraryCase):
         self.check_library_album()
         self.assertEqual(sorted(p.name for p in (self.music / "The Prodigy" / "1992 - Experience").iterdir()),
                          ["CD1", "CD2"])
+
+
+class DiscCovers(TempLibraryCase):
+    def setUp(self):
+        super().setUp()
+        for patcher in (mock.patch.object(discogs, "fetch_album", return_value=None),
+                        mock.patch.object(discogs, "canonical_artist_name", return_value=None),
+                        mock.patch.object(covers, "fetch_deezer_cover", return_value=None),
+                        mock.patch.object(config, "UPCONVERT_ACTION", "warn")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_download_gets_a_cover_in_every_disc_folder(self):
+        album = self.downloads / "Aphex Twin" / "2001 - Drukqs"
+        make_flac(album / "CD1" / "01.flac", tracknumber="1", title="Jynweythek", artist="Aphex Twin")
+        make_flac(album / "CD2" / "01.flac", tracknumber="1", title="Kesson Dalef", artist="Aphex Twin")
+        (album / "cover.png").write_bytes(make_image((1000, 1000), fmt="PNG"))
+        self.assertTrue(pipeline.process_album(pipeline.find_new_albums()[0], pipeline.RunState()))
+        dest = self.music / "Aphex Twin" / "2001 - Drukqs"
+        root = (dest / "Cover.jpg").read_bytes()
+        self.assertEqual([(dest / d / "Cover.jpg").read_bytes() == root for d in ("CD1", "CD2")], [True, True])
+
+    def test_fixlibrary_adds_missing_copies_and_keeps_a_disc_cover_placed_by_hand(self):
+        album = self.music / "Aphex Twin" / "2001 - Drukqs"
+        cover, own = make_image((1000, 1000), seed=1), make_image((1000, 1000), seed=2)
+        for disc, title in ((1, "Jynweythek"), (2, "Kesson Dalef")):
+            track = make_flac(album / f"CD{disc}" / f"01. Aphex Twin - {title}.flac", tracknumber="1", tracktotal="1",
+                              discnumber=str(disc), disctotal="2", title=title, artist="Aphex Twin",
+                              albumartist="Aphex Twin", album="Drukqs", date="2001", genre="IDM", releasetype="album")
+            library.embed_picture(track, cover)
+        replaygain.tag_album(album_audio_files(album))
+        (album / "Cover.jpg").write_bytes(cover)
+        (album / "CD2" / "Cover.jpg").write_bytes(own)       # this disc's own art, put there by hand
+
+        plan = library.plan_library_fixes()
+        self.assertEqual([e["cover"]["disc_copies"] for e in plan], [1])
+        self.assertEqual(library.apply_library_fixes(plan), 0)
+        self.assertEqual((album / "CD1" / "Cover.jpg").read_bytes(), cover)
+        self.assertEqual((album / "CD2" / "Cover.jpg").read_bytes(), own)
+        self.assertEqual(library.plan_library_fixes(), [])
 
 
 class FixLibraryFlatMultiDisc(TempLibraryCase):

@@ -19,6 +19,7 @@ versions follow [Semantic Versioning](https://semver.org/).
   both passports and asks (`REPLACE_ACTION`, `ask` in the bot, `replace` on the CLI).
 
 ### Changed
+- Multi-disc albums: a copy of `Cover.jpg` in every disc folder; one placed there by hand is kept.
 - `requirements.txt` pins the full dependency tree; direct dependencies moved to `requirements.in`.
 
 ## [1.0.0] — 2026-10-24

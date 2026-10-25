@@ -2,7 +2,9 @@
 Cover art: finding the album's image, fetching a better one from Deezer,
 comparing images and normalising them to the library standard.
 
-Standard: Cover.jpg, RGB baseline JPEG, COVER_SIZE × COVER_SIZE.  Larger
+Standard: Cover.jpg, RGB baseline JPEG, COVER_SIZE × COVER_SIZE, in the album
+folder and, as a copy, in every disc folder (CD1, CD2…) — for software that
+only looks for an image next to the tracks.  Larger
 square images are downscaled; smaller ones are kept as they are (upscaling
 adds no detail — the same reason upconverted audio is rejected).
 """
@@ -17,6 +19,7 @@ import requests
 from PIL import Image, ImageOps
 
 from . import config
+from .files import disc_dir_number, has_audio_files
 from .names import artists_match, title_similarity, TITLE_MIN_SIMILARITY
 from .tags import get_embedded_picture
 
@@ -117,6 +120,26 @@ def cover_like_files(album_dir: Path) -> list[Path]:
             if f.is_file() and _COVER_NAME_RE.match(f.name):
                 found.append(f)
     return sorted(found, key=lambda f: (f != album_dir / config.COVER_NAME, len(f.parts), f.name))
+
+
+def disc_cover_files(album_dir: Path) -> list[Path]:
+    """Where the copies of Cover.jpg go: one per disc folder (CD1, CD2…)."""
+    return [d / config.COVER_NAME for d in sorted(album_dir.iterdir())
+            if d.is_dir() and disc_dir_number(d) is not None and has_audio_files(d)]
+
+
+def copy_to_discs(album_dir: Path) -> int:
+    """
+    Put a copy of the album's Cover.jpg into every disc folder that has none
+    (a disc's own cover, placed by hand, is kept); returns how many were written.
+    """
+    cover = album_dir / config.COVER_NAME
+    if not cover.exists():
+        return 0
+    missing = [f for f in disc_cover_files(album_dir) if not f.exists()]
+    for f in missing:
+        f.write_bytes(cover.read_bytes())
+    return len(missing)
 
 
 def current_cover(album_dir: Path, audio_files: list[Path]) -> Optional[bytes]:

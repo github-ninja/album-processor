@@ -63,7 +63,9 @@ with any player that reads tags.
 - Nothing else: no comments, no lyrics, no leftovers from the source.
 
 **Covers**
-- `Cover.jpg`, 1000×1000 JPEG, the same image embedded in every track.
+- `Cover.jpg`, 1000×1000 JPEG, in the album folder and a copy in every disc folder
+  (`CD1/`, `CD2/`…) for software that only looks next to the tracks; the same image
+  embedded in every track. A disc's own cover put in its folder by hand is kept.
 - Fetched from Deezer when it has this exact album, else the download's own art;
   never upscaled; a small cover is upgraded only when Deezer has the same image larger.
 

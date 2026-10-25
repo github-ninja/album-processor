@@ -453,6 +453,7 @@ def process_album(candidate: AlbumCandidate, state: RunState) -> Optional[bool]:
     log.info("🧹 Cleaning non-music files…")
     remove_non_music_files(album_path)
     process_tracks(album_path, info)
+    covers.copy_to_discs(album_path)  # the disc folders exist only now
     replaygain.tag_album(album_audio_files(album_path))
     measured = quality.passport(album_path)
 

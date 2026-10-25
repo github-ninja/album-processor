@@ -528,7 +528,8 @@ def _fix_card(key: str) -> str:
         sizes = "×".join(map(str, cover["from_size"] or [])) or "нет"
         to = "×".join(map(str, cover["to_size"] or []))
         source = "из Deezer" if cover["origin"] == "deezer" else "своя"
-        lines.append(f"🖼 обложка ({source}): {sizes} → {to}, встроить в {cover['embed']} файл(ов)")
+        lines.append(f"🖼 обложка ({source}): {sizes} → {to}, встроить в {cover['embed']} файл(ов)"
+                     + (f", копий в папки дисков: {cover['disc_copies']}" if cover.get("disc_copies") else ""))
     convert = entry.get("convert", [])
     if convert:
         formats = ", ".join(sorted({fmt for _, fmt in convert}))
