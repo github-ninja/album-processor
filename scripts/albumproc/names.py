@@ -36,6 +36,8 @@ _TRAILING_JUNK_RE = re.compile(
 )
 # Optional "YYYY - Title" pattern in folder names
 _YEAR_TITLE_RE = re.compile(r"^(\d{4})\s*[-–]\s*(.+)$")
+# "2000 M3": a release year and the title with only a space between (not "1999" alone)
+_YEAR_SPACE_TITLE_RE = re.compile(r"^((?:19|20)\d{2})\s+(\S.*)$")
 # A bare 4-digit year anywhere in a folder name (any bracket type)
 _YEAR_ANYWHERE_RE = re.compile(r"[\(\[\s]+(\d{4})[\)\]\s]*")
 _INVISIBLE_RE = re.compile(r"[​-‏⁠﻿]")
@@ -81,7 +83,7 @@ def clean_folder_name(name: str) -> str:
     cleaned = re.sub(r"^\d{4}[-.]\d{2}[-.]\d{2}\s+[-–]\s+", "", cleaned)
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -–_.")
     # Also drop a leading year prefix ("2001 - Album Name" → "Album Name")
-    m = _YEAR_TITLE_RE.match(cleaned)
+    m = _YEAR_TITLE_RE.match(cleaned) or _YEAR_SPACE_TITLE_RE.match(cleaned)
     if m:
         cleaned = m.group(2).strip()
     return cleaned or name.strip()
@@ -90,9 +92,9 @@ def clean_folder_name(name: str) -> str:
 def extract_year_from_folder(name: str) -> str:
     """
     Extract a 4-digit release year from a folder name: "2001 - Title",
-    "Title [2001]" or "Title (2001)".  Returns "" if not found.
+    "2001 Title", "Title [2001]" or "Title (2001)".  Returns "" if not found.
     """
-    m = _YEAR_TITLE_RE.match(name) or _YEAR_ANYWHERE_RE.search(name)
+    m = _YEAR_TITLE_RE.match(name) or _YEAR_SPACE_TITLE_RE.match(name) or _YEAR_ANYWHERE_RE.search(name)
     return m.group(1) if m else ""
 
 
@@ -215,14 +217,25 @@ def is_contaminated_artist(value: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def normalize_title(title: str) -> str:
-    """Lower-case, junk-free, punctuation-free form of a title for comparison."""
-    cleaned = clean_folder_name(title).casefold().replace("&", " and ")
+    """
+    Lower-case, junk-free, punctuation-free form of a title for comparison;
+    compatibility forms and accents folded ("M³" = "M3", "Réunion" = "Reunion").
+    """
+    cleaned = unicodedata.normalize("NFKD", clean_folder_name(title).casefold().replace("&", " and "))
+    cleaned = "".join(c for c in cleaned if not unicodedata.combining(c))
     return " ".join(re.sub(r"[^\w]+", " ", cleaned).split())
+
+
+_SUBTITLE_RE = re.compile(r"\s*[\(\[][^\(\)\[\]]*[\)\]]\s*$")
 
 
 def title_similarity(a: str, b: str) -> float:
     na, nb = normalize_title(a), normalize_title(b)
     ratio = difflib.SequenceMatcher(None, na, nb).ratio()
+    # The same title without a bracketed subtitle: "M3" vs "M³ (Daily Assortment Of Sound)"
+    sa, sb = normalize_title(_SUBTITLE_RE.sub("", a)), normalize_title(_SUBTITLE_RE.sub("", b))
+    if sa and sa == sb:
+        ratio = max(ratio, 0.9)
     # One title is the other plus a subtitle: "Illinoize" vs "Illinoize: The Remix Tape"
     short, long_ = sorted((na, nb), key=len)
     if len(short) >= 4 and long_.startswith(short + " "):

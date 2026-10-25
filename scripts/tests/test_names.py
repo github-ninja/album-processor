@@ -25,6 +25,9 @@ class CleanFolderName(unittest.TestCase):
         self.assertEqual(names.clean_folder_name("Nocturne EP"), "Nocturne EP")
         self.assertEqual(names.clean_folder_name("2001 - Odyssey"), "Odyssey")
         self.assertEqual(names.clean_folder_name("2013-09-02 - I Am Legion [GB - DVSNCD003]"), "I Am Legion")
+        self.assertEqual(names.clean_folder_name("2000 M3"), "M3")
+        self.assertEqual(names.extract_year_from_folder("2000 M3"), "2000")
+        self.assertEqual(names.extract_year_from_folder("1999"), "")
 
     def test_meaningful_brackets_and_short_names_are_kept(self):
         for title in ("Artifakts (BC)", "Blade (Music From And Inspired By The Motion Picture)",
@@ -62,6 +65,11 @@ class FileNames(unittest.TestCase):
 class Matching(unittest.TestCase):
     def test_subtitle_counts_as_match(self):
         self.assertGreaterEqual(names.title_similarity("Illinoize", "Illinoize: The Remix Tape"), 0.8)
+
+    def test_compatibility_forms_and_bracketed_subtitles(self):
+        self.assertGreaterEqual(names.title_similarity("M3", "M³ (Daily Assortment Of Sound)"), 0.9)
+        self.assertEqual(names.title_similarity("Reunion", "Réunion"), 1.0)
+        self.assertLess(names.title_similarity("M3", "M4 (Daily Assortment Of Sound)"), 0.6)
 
     def test_different_titles(self):
         self.assertLess(names.title_similarity("Future Perfect", "1000% Drum'N'Bass Vol. 3"), 0.6)

@@ -11,6 +11,11 @@ versions follow [Semantic Versioning](https://semver.org/).
   true peak for every album, with a 🟢/🟡/🔴 grade in the import report.
 - `/quality` (CLI `--quality`): the most crushed albums, or one album track by track.
 - The bot sets its `/` command menu on start, visible in the owner's chat only.
+
+### Fixed
+- Folder names like "2000 M3" (year and title without a dash) are understood.
+- Titles match across compatibility forms, accents and bracketed subtitles:
+  "M3" finds Discogs' "M³ (Daily Assortment Of Sound)".
 - `/newreleases` (CLI `--releases`): new albums by the library's artists from Deezer —
   albums only, no reissues or remix/live albums; automatic checks only when scheduled
   (`daily` / `weekly` / `monthly`, `stop`), silent without news; possible namesakes
