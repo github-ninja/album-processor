@@ -11,6 +11,7 @@ music/.album_processor/listener.md, so the verdict is about *this* listener.
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -23,7 +24,8 @@ from .tags import read_tags
 log = logging.getLogger(__name__)
 
 _API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-_TIMEOUT = 90
+_TIMEOUT = 60
+_OVERLOADED = {500, 502, 503, 504}
 
 INSTRUCTIONS = """\
 Ты — Антон, музыкальный бот-библиотекарь с отличным слухом и знанием мастеринга.
@@ -35,6 +37,16 @@ INSTRUCTIONS = """\
 - стоит ли искать другое издание и какое именно — только из списка изданий в досье
   (год, формат, лейбл), с объяснением; если лучше оставить как есть — так и скажи прямо;
 - если уместно, какие треки послушать внимательнее.
+
+Как читать паспорт (мерило — эти шкалы, а не общие слова):
+- DR альбома: 12+ открытый, 9–11 нормальный, 7–8 плотный, 5–6 сжатый, ≤4 пережатый.
+  Для электроники, хип-хопа, рока 6–8 — обычная норма жанра, не повод для тревоги.
+- Плоские вершины (flat_tops) — следы жёсткого клиппинга; смотри на частоту в минуту:
+  меньше 5/мин — ничтожно и не слышно; 5–100/мин — срезанные удары, слышно на внимательном
+  прослушивании; 100–1000/мин — заметный клиппинг; тысячи — грубый, слышен всегда.
+  Десятки полок на весь альбом — это ничего.
+- True peak до +1 dB — обычное дело и безвредно, если у слушателя лимитер или ReplayGain;
+  +3 dB и выше — признак перегруженного мастера.
 
 Правила:
 - Факты — только из досье. Не придумывай ремастеры, инженеров, даты и издания,
@@ -78,7 +90,9 @@ def dossier(album_dir: Path) -> dict:
             "grade_scale": "🟢 открытый мастер, 🟡 плотный или следы клиппинга, 🔴 пережатый",
             "tracks": [
                 {"track": Path(t["file"]).stem, "dr": t["dr"], "flat_tops": t["clips"],
-                 "minutes": round(t["seconds"] / 60, 1), "true_peak": t["true_peak"]}
+                 "flat_tops_per_minute": round(t["clips"] / max(t["seconds"] / 60, 1 / 60), 1),
+                 "minutes": round(t["seconds"] / 60, 1),
+                 "true_peak_db": round(20 * math.log10(t["true_peak"]), 1) if t["true_peak"] else None}
                 for t in passport["tracks"]
             ],
         },
@@ -102,9 +116,26 @@ class OpinionError(RuntimeError):
     """A problem worth telling the user about in plain words."""
 
 
+class _Overloaded(OpinionError):
+    """The model is busy or silent: worth asking another one."""
+
+
 def ask_gemini(facts: dict) -> str:
+    """The opinion from GEMINI_MODEL, or from GEMINI_FALLBACK_MODEL when the first is overloaded."""
     if not config.GEMINI_API_KEY:
         raise OpinionError("не задан GEMINI_API_KEY")
+    models = list(dict.fromkeys(m for m in (config.GEMINI_MODEL, config.GEMINI_FALLBACK_MODEL) if m))
+    for model in models:
+        try:
+            return _generate(model, facts)
+        except _Overloaded as exc:
+            log.warning("%s: %s", model, exc)
+            if model == models[-1]:
+                raise OpinionError(f"модели Gemini перегружены — попробуйте позже ({exc})") from exc
+    raise AssertionError("unreachable")
+
+
+def _generate(model: str, facts: dict) -> str:
     body = {
         "system_instruction": {"parts": [{"text": INSTRUCTIONS}]},
         "contents": [{"role": "user", "parts": [{"text": json.dumps(facts, ensure_ascii=False, indent=1)}]}],
@@ -112,8 +143,10 @@ def ask_gemini(facts: dict) -> str:
     }
     proxies = {"https": config.GEMINI_PROXY} if config.GEMINI_PROXY else None
     try:
-        resp = requests.post(_API_URL.format(model=config.GEMINI_MODEL), json=body, timeout=_TIMEOUT,
+        resp = requests.post(_API_URL.format(model=model), json=body, timeout=_TIMEOUT,
                              headers={"x-goog-api-key": config.GEMINI_API_KEY}, proxies=proxies)
+    except requests.Timeout as exc:
+        raise _Overloaded("нет ответа") from exc
     except requests.RequestException as exc:
         raise OpinionError(f"Gemini не отвечает: {exc}") from exc
     if resp.status_code != 200:
@@ -126,6 +159,8 @@ def ask_gemini(facts: dict) -> str:
             raise OpinionError("Gemini API недоступен из страны сервера — задайте GEMINI_PROXY")
         if resp.status_code == 429:
             raise OpinionError("исчерпан лимит бесплатного тарифа Gemini — попробуйте позже")
+        if resp.status_code in _OVERLOADED:
+            raise _Overloaded(f"HTTP {resp.status_code}")
         raise OpinionError(f"Gemini: HTTP {resp.status_code} {message}".strip())
     parts = ((resp.json().get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
     text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()

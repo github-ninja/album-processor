@@ -196,7 +196,8 @@ music/
 | `UPCONVERT_ACTION` | | `ask` | Подозрение на апконверт: `ask` (спросить), `warn` (обработать всё равно), `skip` (оставить в загрузках) |
 | `REPLACE_ACTION` | | `ask` | Альбом уже есть в медиатеке: `ask` (сравнить паспорта и спросить), `replace` (заменить) |
 | `GEMINI_API_KEY` | | — | Включает мнения Антона; бесплатный ключ на [aistudio.google.com](https://aistudio.google.com) |
-| `GEMINI_MODEL` | | `gemini-3.8-flash` | Любая текстовая модель Gemini, например `gemini-3.5-flash-lite` |
+| `GEMINI_MODEL` | | `gemini-3.6-flash` | Любая текстовая модель Gemini |
+| `GEMINI_FALLBACK_MODEL` | | `gemini-3.5-flash-lite` | Спрашивается, если основная модель перегружена (HTTP 503) или молчит |
 | `GEMINI_PROXY` | | — | Прокси только для запросов к Gemini, если API недоступен в вашей стране |
 | `TZ` | | UTC | Часовой пояс для логов |
 

@@ -18,6 +18,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   album's mastering and editions, written by a Gemini model (`GEMINI_API_KEY`,
   `GEMINI_MODEL`, `GEMINI_PROXY`) from a dossier of facts — passport, Discogs
   editions, credits and notes, the listener profile in `.album_processor/listener.md`.
+  An overloaded model (HTTP 503) hands over to `GEMINI_FALLBACK_MODEL`; the prompt
+  carries reading scales for DR, flat tops and true peak.
 
 ### Fixed
 - Folder names like "2000 M3" (year and title without a dash) are understood.

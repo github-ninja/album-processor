@@ -51,6 +51,17 @@ class Opinion(TempLibraryCase):
         self.assertEqual(request.kwargs["headers"], {"x-goog-api-key": "test-key"})
         self.assertIn("Факты — только из досье", request.kwargs["json"]["system_instruction"]["parts"][0]["text"])
 
+    def test_overloaded_model_hands_over_to_the_fallback(self):
+        replies = [gemini_reply("", 503, "This model is currently experiencing high demand."),
+                   gemini_reply("Ответ запасной модели.")]
+        with mock.patch.object(opinion.requests, "post", side_effect=replies) as post:
+            code, text = opinion.run("Night Walks")
+        self.assertEqual(code, 0)
+        self.assertTrue(text.endswith("Ответ запасной модели."))
+        self.assertIn(config.GEMINI_FALLBACK_MODEL, post.call_args_list[1].args[0])
+        with mock.patch.object(opinion.requests, "post", return_value=gemini_reply("", 503, "busy")):
+            self.assertIn("перегружены", opinion.run("Night Walks")[1])
+
     def test_errors_are_explained(self):
         cases = ((400, "User location is not supported for the API use.", "GEMINI_PROXY"),
                  (429, "Resource has been exhausted", "лимит"))

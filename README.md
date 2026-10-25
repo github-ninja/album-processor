@@ -198,7 +198,8 @@ To update: `git pull && docker compose up -d --build`.
 | `UPCONVERT_ACTION` | | `ask` | Suspected upconverts: `ask` (bot asks), `warn` (process anyway), `skip` (leave in downloads) |
 | `REPLACE_ACTION` | | `ask` | An album already in the library: `ask` (bot compares passports and asks), `replace` (swap it in) |
 | `GEMINI_API_KEY` | | — | Enables Anton's opinions; free key from [aistudio.google.com](https://aistudio.google.com) |
-| `GEMINI_MODEL` | | `gemini-3.8-flash` | Any Gemini text model, e.g. `gemini-3.5-flash-lite` |
+| `GEMINI_MODEL` | | `gemini-3.6-flash` | Any Gemini text model |
+| `GEMINI_FALLBACK_MODEL` | | `gemini-3.5-flash-lite` | Asked when the main model is overloaded (HTTP 503) or silent |
 | `GEMINI_PROXY` | | — | Proxy for Gemini requests only, where the API is not available in your country |
 | `TZ` | | UTC | Time zone for logs |
 

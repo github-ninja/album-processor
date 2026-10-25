@@ -41,7 +41,10 @@ DISCOGS_TOKEN = os.environ.get("DISCOGS_TOKEN", "")
 # requests (e.g. "socks5h://host:1080" or "http://host:3128") for servers in
 # countries where the Gemini API is not available.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+# The newest Flash is often overloaded (HTTP 503): the previous one answers reliably,
+# and an overloaded or silent model hands over to the fallback
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 GEMINI_PROXY = os.environ.get("GEMINI_PROXY", "")
 
 FILE_MODE = 0o644
