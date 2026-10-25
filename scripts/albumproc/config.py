@@ -36,6 +36,14 @@ DEFERRED_REPORT_FILE = os.environ.get("DEFERRED_REPORT_FILE", "")
 # Optional Discogs personal access token: raises the rate limit from 25 to 60 req/min
 DISCOGS_TOKEN = os.environ.get("DISCOGS_TOKEN", "")
 
+# Optional: Anton's opinions on albums (opinion.py) — a Gemini API key from
+# aistudio.google.com; the free tier is plenty.  GEMINI_PROXY routes only these
+# requests (e.g. "socks5h://host:1080" or "http://host:3128") for servers in
+# countries where the Gemini API is not available.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_PROXY = os.environ.get("GEMINI_PROXY", "")
+
 FILE_MODE = 0o644
 DIR_MODE = 0o755
 

@@ -92,6 +92,15 @@ with any player that reads tags.
   so the message has two parts: albums in the genre of your albums by that artist,
   and *may be a namesake* — with the reason — instead of hiding anything.
 
+**Anton's opinion — `/opinion`** *(optional, needs a free Gemini API key)*
+- The bot — Anton — gives a short verdict on an album: what its passport means
+  by ear, whether another edition is worth hunting and which one, which tracks to
+  check.
+- Written from a dossier of facts only — tags, the passport, the album's editions,
+  mastering credits and notes from Discogs — so the model does not invent remasters.
+- Tailored to you: describe your gear and taste in `music/.album_processor/listener.md`.
+- A *💬 album* button under every import report, or `/opinion <name>` for any album.
+
 **Library maintenance — `/fixlibrary`**
 - Checks every album against the conventions and shows a plan before touching
   anything: apply all, go through it one by one, or cancel.
@@ -188,6 +197,9 @@ To update: `git pull && docker compose up -d --build`.
 | `DISCOGS_TOKEN` | | — | Discogs personal token (higher rate limit) |
 | `UPCONVERT_ACTION` | | `ask` | Suspected upconverts: `ask` (bot asks), `warn` (process anyway), `skip` (leave in downloads) |
 | `REPLACE_ACTION` | | `ask` | An album already in the library: `ask` (bot compares passports and asks), `replace` (swap it in) |
+| `GEMINI_API_KEY` | | — | Enables Anton's opinions; free key from [aistudio.google.com](https://aistudio.google.com) |
+| `GEMINI_MODEL` | | `gemini-3.8-flash` | Any Gemini text model, e.g. `gemini-3.5-flash-lite` |
+| `GEMINI_PROXY` | | — | Proxy for Gemini requests only, where the API is not available in your country |
 | `TZ` | | UTC | Time zone for logs |
 
 `docker-compose.yml` maps `DOWNLOADS_DIR` and `MUSIC_DIR` from `.env` to
@@ -206,6 +218,7 @@ To update: `git pull && docker compose up -d --build`.
 | `/quality <name>` | Passports of the albums matching the name, track by track. |
 | `/newreleases` | New albums by your artists (Deezer), checked now. |
 | `/newreleases daily` / `weekly` / `monthly` / `stop` / `status` | Automatic checks: turn on, off, show. Off until you turn them on. |
+| `/opinion <name>` | Anton's opinion on an album: mastering and editions (needs `GEMINI_API_KEY`). |
 | `/help` | List the commands. |
 
 The bot fills its `/` command menu itself on start — in your chat only; no BotFather setup needed.
@@ -248,6 +261,7 @@ scripts/
 │   ├── audioformat.py    decoding (PyAV) and conversion to FLAC 16/44.1
 │   ├── replaygain.py     EBU R128 loudness and true peaks
 │   ├── quality.py        mastering passport: DR, clipping, grades, /quality
+│   ├── opinion.py        Anton's opinion: dossier of facts → Gemini
 │   ├── releases.py       new albums of the library's artists (Deezer), schedules
 │   ├── upconvert.py      spectral detection of lossy sources
 │   ├── files.py          filesystem helpers and the journal

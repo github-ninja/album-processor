@@ -113,7 +113,8 @@ def fetch_album(artist: Optional[str], raw_title: str) -> Optional[dict]:
     the original release year (earliest non-promo version).  Tracklist,
     artists and genre come from the matched release.  Costs 2-4 requests.
 
-    Returns {"title", "artist", "year", "genre", "release_types", "tracklist"} or None when
+    Returns {"release_id", "master_id", "title", "artist", "year", "genre",
+    "release_types", "tracklist"} or None when
     Discogs is unreachable or has no confident match.
     """
     cleaned = clean_folder_name(raw_title)
@@ -172,6 +173,8 @@ def fetch_album(artist: Optional[str], raw_title: str) -> Optional[dict]:
                 year = min(years) if years else year
 
         return {
+            "release_id": release.get("id"),
+            "master_id": master_id,
             "title": title,
             "artist": join_artists(release.get("artists", [])),
             "year": str(year) if year else "",
@@ -194,6 +197,37 @@ def fetch_album(artist: Optional[str], raw_title: str) -> Optional[dict]:
     except Exception as exc:  # noqa: BLE001
         log.warning("⚠️  Discogs error: %s", exc)
     return None
+
+
+def edition_history(release_id: int, master_id: Optional[int]) -> dict:
+    """
+    What Discogs knows about an album's editions, for Anton's opinion: the
+    matched release's labels, formats, mastering credits and notes, and every
+    version under its master.  Costs 2-3 requests.
+    """
+    release = api_get(f"{_API}/releases/{release_id}") or {}
+    credits = [f"{e.get('role')}: {strip_disambiguation(e.get('name', ''))}"
+               for e in release.get("extraartists", [])
+               if re.search(r"master|lacquer|remaster|mix", e.get("role", ""), re.IGNORECASE)]
+    history = {
+        "release": {
+            "title": release.get("title"),
+            "year": release.get("year"),
+            "labels": [f"{l.get('name')} {l.get('catno', '')}".strip() for l in release.get("labels", [])],
+            "formats": [", ".join([f.get("name", "")] + f.get("descriptions", [])) for f in release.get("formats", [])],
+            "credits": credits,
+            "notes": (release.get("notes") or "")[:1500],
+        },
+        "versions": [],
+    }
+    if master_id:
+        versions = (api_get(f"{_API}/masters/{master_id}/versions", params={"per_page": 100}) or {}).get("versions", [])
+        history["versions"] = [
+            {"title": v.get("title"), "year": v.get("released"), "format": v.get("format"),
+             "label": v.get("label"), "catno": v.get("catno"), "country": v.get("country")}
+            for v in versions
+        ]
+    return history
 
 
 def canonical_artist_name(name: str) -> Optional[str]:

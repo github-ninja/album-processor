@@ -62,6 +62,9 @@ RELEASES_STATE = MUSIC_PATH / ".album_processor" / "releases.json"
 _RELEASES_POLL_SECONDS = 3600  # the processor decides whether a scheduled check is due
 UPCONVERT_ACTION = os.environ.get("UPCONVERT_ACTION", "ask")
 REPLACE_ACTION = os.environ.get("REPLACE_ACTION", "ask")
+# Anton's opinions need a Gemini key; without one the feature is simply hidden
+OPINIONS_ENABLED = bool(os.environ.get("GEMINI_API_KEY"))
+BOT_NAME = "Антон"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -80,6 +83,9 @@ _processor_lock = asyncio.Lock()
 # Suspected upconverts awaiting a decision: short id → processor report entry.
 # Kept in memory only; after a restart /newalbum simply asks again.
 _pending: dict[str, dict] = {}
+
+# Albums just processed, offered for Anton's opinion: short id → library path
+_opinion_albums: dict[str, str] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +244,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
         return
     await update.message.reply_text(
+        f"Я {BOT_NAME} — веду твою медиатеку.\n\n"
         "Доступные команды:\n"
         "/newalbum — обработать новые альбомы из папки загрузок\n"
         "/fixlibrary — проверить библиотеку (названия, теги, обложки, формат) и исправить\n"
@@ -245,10 +252,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/quality — паспорт мастеринга: самые пережатые альбомы; /quality <название> — подробно\n"
         "/newreleases — новые альбомы ваших исполнителей; /newreleases weekly (daily, monthly) — "
         "проверять автоматически, /newreleases stop — выключить\n"
+        "/opinion <название> — моё мнение об альбоме: мастер и издания\n"
         "/help     — это сообщение\n\n"
         "Образ альбома с CUE режется на треки; хайрез, ALAC, APE и WAV приводятся к FLAC 16/44.1. "
         "Теги и обложка — по Discogs и Deezer, громкость — ReplayGain. "
-        "Если альбом похож на апконверт из MP3 или уже есть в медиатеке, бот спросит, что с ним делать."
+        "Если альбом похож на апконверт из MP3 или уже есть в медиатеке, я спрошу, что с ним делать."
     )
 
 
@@ -264,13 +272,63 @@ async def _process(message: Message, args: list[str], env: dict[str, str]) -> No
             log.exception("Failed to run processor")
             return
         try:
-            deferred = json.loads(report_file.read_text(encoding="utf-8"))
+            entries = json.loads(report_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            deferred = []
+            entries = []
 
     await _reply_with_output(message, result)
-    await _ask_about_deferred(message, deferred)
+    await _ask_about_deferred(message, [e for e in entries if e.get("kind") != "processed"])
+    await _offer_opinions(message, [e for e in entries if e.get("kind") == "processed"])
     log.info("Processor finished with return code %d", result.returncode)
+
+
+async def _offer_opinions(message: Message, albums: list[dict]) -> None:
+    """A button per processed album: Anton's opinion on demand, not a wall of text after every run."""
+    if not OPINIONS_ENABLED or not albums:
+        return
+    rows = []
+    for album in albums[:10]:
+        key = uuid.uuid4().hex[:12]
+        _opinion_albums[key] = album["path"]
+        rows.append([InlineKeyboardButton(f"💬 {album['name']}"[:60], callback_data=f"op:{key}")])
+    await message.reply_text("Хочешь, расскажу, что думаю об альбоме?", reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def _send_opinion(message: Message, target: str) -> None:
+    try:
+        result = await _run_processor(["--opinion", target], {})
+    except Exception as exc:
+        await message.reply_text(f"❌ Не удалось запустить скрипт:\n{exc}")
+        log.exception("Failed to run processor")
+        return
+    await message.reply_text((result.stdout.strip() or result.stderr.strip()[-3500:] or "🤷 Пустой ответ")[:4000])
+
+
+async def cmd_opinion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update):
+        return
+    query = " ".join(context.args or [])
+    if not query:
+        await update.message.reply_text("Напиши, о каком альбоме: /opinion <часть названия или исполнителя>")
+        return
+    if not OPINIONS_ENABLED:
+        await update.message.reply_text("Чтобы я мог высказываться об альбомах, нужен GEMINI_API_KEY в настройках.")
+        return
+    await update.message.reply_text("🤔 Слушаю и думаю…")
+    await _send_opinion(update.message, query)
+
+
+async def on_opinion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not _is_allowed(update):
+        await query.answer()
+        return
+    path = _opinion_albums.get(query.data.split(":", 1)[1])
+    if path is None:
+        await query.answer("Кнопка устарела — спроси через /opinion")
+        return
+    await query.answer("Слушаю и думаю…")
+    await _send_opinion(query.message, path)
 
 
 async def cmd_newalbum(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -668,6 +726,7 @@ COMMANDS = [
     ("fixlibrary", "Проверить медиатеку и исправить (fixlibrary all — со сверкой по Discogs)", cmd_fixlibrary),
     ("quality", "Паспорт мастеринга (quality <название> — подробно)", cmd_quality),
     ("newreleases", "Новые альбомы ваших исполнителей (daily/weekly/monthly/stop — расписание)", cmd_newreleases),
+    ("opinion", "Мнение Антона об альбоме: мастер и издания (opinion <название>)", cmd_opinion),
     ("help", "Список команд", cmd_help),
 ]
 
@@ -678,8 +737,10 @@ async def _on_start(app: Application) -> None:
     try:
         await app.bot.set_my_commands([BotCommand(name, description) for name, description, _ in COMMANDS],
                                       scope=BotCommandScopeChat(ALLOWED_ID))
-    except Exception:  # noqa: BLE001 — the menu is a convenience, the bot works without it
-        log.exception("Failed to set the command menu")
+        if (await app.bot.get_my_name()).name != BOT_NAME:
+            await app.bot.set_my_name(BOT_NAME)
+    except Exception:  # noqa: BLE001 — the menu and name are a convenience, the bot works without them
+        log.exception("Failed to set the command menu or the bot's name")
 
 
 def main() -> None:
@@ -694,6 +755,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_fix_decision, pattern=r"^fx:"))
     app.add_handler(CallbackQueryHandler(on_upconvert_decision, pattern=r"^up:"))
     app.add_handler(CallbackQueryHandler(on_releases_schedule, pattern=r"^nr:"))
+    app.add_handler(CallbackQueryHandler(on_opinion, pattern=r"^op:"))
 
     log.info("Bot started. Waiting for commands from user ID %d…", ALLOWED_ID)
     app.run_polling(drop_pending_updates=True)

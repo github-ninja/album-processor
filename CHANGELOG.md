@@ -12,6 +12,13 @@ versions follow [Semantic Versioning](https://semver.org/).
 - `/quality` (CLI `--quality`): the most crushed albums, or one album track by track.
 - The bot sets its `/` command menu on start, visible in the owner's chat only.
 
+### Added — Anton
+- The bot has a name: Anton. It sets it in Telegram itself.
+- `/opinion <name>` and a button under every import report: Anton's verdict on an
+  album's mastering and editions, written by a Gemini model (`GEMINI_API_KEY`,
+  `GEMINI_MODEL`, `GEMINI_PROXY`) from a dossier of facts — passport, Discogs
+  editions, credits and notes, the listener profile in `.album_processor/listener.md`.
+
 ### Fixed
 - Folder names like "2000 M3" (year and title without a dash) are understood.
 - Titles match across compatibility forms, accents and bracketed subtitles:

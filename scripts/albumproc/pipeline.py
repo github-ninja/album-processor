@@ -53,6 +53,7 @@ class RunState:
     """What a processing run reports at the end."""
     flagged: list[str] = field(default_factory=list)   # suspected upconverts, for the summary
     deferred: list[dict] = field(default_factory=list)  # left in downloads for the bot to ask about
+    processed: list[dict] = field(default_factory=list)  # moved to the library, for the bot's opinion buttons
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +474,8 @@ def process_album(candidate: AlbumCandidate, state: RunState) -> Optional[bool]:
 
     dest = move_to_library(album_path, info)
     quality.remember(dest, measured)
+    state.processed.append({"kind": "processed", "path": str(dest),
+                            "name": f"{info.artist.split(';')[0]} — {info.album}"})
     for line in quality.describe(measured):
         log.info(line)
     _cleanup_empty_download_dir(candidate.artist)

@@ -13,6 +13,9 @@ Command line:
                                              new albums of the library's artists (Deezer):
                                              check now, run a scheduled check if due,
                                              show or set the schedule
+  album_processor.py --opinion QUERY [--dossier]
+                                             Anton's opinion on an album (Gemini), or
+                                             the dossier of facts it is written from
 """
 
 import datetime
@@ -21,7 +24,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import config, library, pipeline, quality, releases
+from . import config, library, opinion, pipeline, quality, releases
 
 log = logging.getLogger("albumproc")
 
@@ -42,7 +45,8 @@ def _process(paths: list[str]) -> int:
     failed, deferred = results.count(False), results.count(None)
 
     if config.DEFERRED_REPORT_FILE:
-        Path(config.DEFERRED_REPORT_FILE).write_text(json.dumps(state.deferred, ensure_ascii=False), encoding="utf-8")
+        Path(config.DEFERRED_REPORT_FILE).write_text(json.dumps(state.deferred + state.processed, ensure_ascii=False),
+                                                     encoding="utf-8")
     if state.flagged:
         # Repeated at the end: the Telegram bot only shows the tail of long logs
         log.warning("\n🚩 Подозрение на апконверт (%d):", len(state.flagged))
@@ -100,13 +104,18 @@ def _releases(action: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    # --releases prints a message for the bot on stdout: its log goes to stderr
+    # --releases and --opinion print a message for the bot on stdout: their log goes to stderr
     logging.basicConfig(level=logging.INFO, format="%(message)s",
-                        stream=sys.stderr if argv[:1] == ["--releases"] else sys.stdout)
+                        stream=sys.stderr if argv[:1] in (["--releases"], ["--opinion"]) else sys.stdout)
     if argv and argv[0] == "--fix-library":
         return _fix_library(argv[1:])
     if argv and argv[0] == "--releases":
         return _releases(argv[1] if len(argv) > 1 else "check")
+    if argv and argv[0] == "--opinion":
+        args = [a for a in argv[1:] if a != "--dossier"]
+        code, text = opinion.run(" ".join(args), show_dossier="--dossier" in argv)
+        print(text)
+        return code
     if argv and argv[0] == "--quality":
         print("\n".join(quality.library_report(" ".join(argv[1:]))))
         return 0
