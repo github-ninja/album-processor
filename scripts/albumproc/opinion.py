@@ -51,6 +51,7 @@ INSTRUCTIONS = """\
 Как выбирать издание:
 - Другой каталожный номер, страна или формат того же релиза — это обычно тот же мастер
   и тот же звук; это не повод для замены.
+- Просмотри все editions целиком, до последнего года — переиздания обычно в конце списка.
 - Советуй издание, только если в досье есть признак другого мастеринга: пометка
   Remastered или Remaster, заметно более поздний год переиздания, другой инженер
   мастеринга в credits, указание в notes. Назови этот признак.
@@ -110,7 +111,8 @@ def dossier(album_dir: Path) -> dict:
     if found and found.get("release_id"):
         history = discogs.edition_history(found["release_id"], found.get("master_id"))
         history["note"] = ("release — издание, найденное поиском Discogs: не обязательно то, "
-                           "что лежит в медиатеке; versions — все издания этого альбома")
+                           "что лежит в медиатеке; editions — сводка всех изданий этого альбома "
+                           "(год · носитель · лейбл · пометки · ×число тиражей)")
         facts["discogs"] = history
     else:
         facts["discogs"] = "альбом не найден в Discogs"
@@ -154,8 +156,9 @@ def _generate(model: str, facts: dict) -> str:
     try:
         resp = requests.post(_API_URL.format(model=model), json=body, timeout=_TIMEOUT,
                              headers={"x-goog-api-key": config.GEMINI_API_KEY}, proxies=proxies)
-    except requests.Timeout as exc:
-        raise _Overloaded("нет ответа") from exc
+    except (requests.Timeout, requests.ConnectionError) as exc:
+        # Silence or a dropped connection: an overloaded model as often as a network problem
+        raise _Overloaded(f"нет ответа ({type(exc).__name__})") from exc
     except requests.RequestException as exc:
         raise OpinionError(f"Gemini не отвечает: {exc}") from exc
     if resp.status_code != 200:

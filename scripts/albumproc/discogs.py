@@ -4,6 +4,7 @@ and canonical artist spelling.
 """
 
 import logging
+from collections import Counter
 import re
 import time
 from typing import Optional
@@ -221,13 +222,60 @@ def edition_history(release_id: int, master_id: Optional[int]) -> dict:
         "versions": [],
     }
     if master_id:
-        versions = (api_get(f"{_API}/masters/{master_id}/versions", params={"per_page": 100}) or {}).get("versions", [])
-        history["versions"] = [
-            {"title": v.get("title"), "year": v.get("released"), "format": v.get("format"),
-             "label": v.get("label"), "catno": v.get("catno"), "country": v.get("country")}
-            for v in versions
-        ]
+        versions, page, pages = [], 1, 1
+        while page <= min(pages, _MAX_VERSION_PAGES):
+            reply = api_get(f"{_API}/masters/{master_id}/versions", params={"per_page": 100, "page": page}) or {}
+            versions += reply.get("versions", [])
+            pages = reply.get("pagination", {}).get("pages", 1)
+            page += 1
+        history["editions"] = edition_summary(versions)
+        history["editions_total"] = len(versions)
     return history
+
+
+_MAX_VERSION_PAGES = 5  # 500 versions: more than any album has that is worth reading
+_EDITION_MARKS = ("Remastered", "Reissue", "Promo", "Test Pressing")
+_FILE_FORMATS = ("FLAC", "ALAC", "WAV", "AIFF", "AAC", "MP3")
+# Never the source of a lossless library: left out of the summary, only counted
+_NOT_A_SOURCE = {"Cassette", "Minidisc", "8-Track Cartridge", "Reel-To-Reel", "VHS"}
+
+
+def edition_summary(versions: list[dict]) -> list[str]:
+    """
+    Every version of a master in a few readable lines, oldest first: the
+    pressings of one edition (countries, catalogue numbers) collapse into
+    "2016 · CD · Caroline International · Reissue ×3".  Bootlegs and tape
+    formats are only counted.
+    """
+    titles = Counter(v.get("title", "") for v in versions)
+    main_title = titles.most_common(1)[0][0] if titles else ""
+    groups: Counter = Counter()
+    bootlegs = tapes = 0
+    for v in versions:
+        description = v.get("format", "")
+        media = v.get("major_formats") or []
+        if "unofficial release" in description.lower():
+            bootlegs += 1
+            continue
+        if media and set(media) <= _NOT_A_SOURCE:
+            tapes += 1
+            continue
+        medium = "/".join(media) or "?"
+        if medium == "File":
+            kinds = [k for k in _FILE_FORMATS if k.lower() in description.lower()]
+            medium = f"File ({', '.join(kinds)})" if kinds else "File"
+        marks = ", ".join(m for m in _EDITION_MARKS if m.lower() in description.lower())
+        year = (v.get("released") or "")[:4]
+        title = v.get("title", "")
+        groups[(year if year.strip("0") else "год ?", medium, strip_disambiguation(v.get("label", "")), marks,
+                title if title != main_title else "")] += 1
+    lines = []
+    for (year, medium, label, marks, title), count in sorted(groups.items()):
+        line = " · ".join(part for part in (year, medium, label, marks, f"«{title}»" if title else "") if part)
+        lines.append(line + (f" ×{count}" if count > 1 else ""))
+    if bootlegs or tapes:
+        lines.append(f"(не показаны: неофициальных изданий {bootlegs}, кассет и прочих плёнок {tapes})")
+    return lines
 
 
 def canonical_artist_name(name: str) -> Optional[str]:

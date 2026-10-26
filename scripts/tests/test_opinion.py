@@ -77,3 +77,22 @@ class Opinion(TempLibraryCase):
         make_flac(self.music / "Hidden Orchestra" / "2012 - Archipelago" / "01.flac")
         self.assertIn("уточните", opinion.run("Hidden Orchestra")[1])
         self.assertIn("Не нашёл", opinion.run("Nonexistent")[1])
+
+
+class EditionSummary(TempLibraryCase):
+    def test_pressings_collapse_and_bootlegs_and_tapes_are_only_counted(self):
+        versions = (
+            [{"title": "Americana", "released": "1998", "major_formats": ["CD"], "format": "Album", "label": "Columbia"}] * 23
+            + [{"title": "Americana", "released": "2016", "major_formats": ["File"], "format": "FLAC, Album", "label": "Round Hill Music"},
+               {"title": "Americana", "released": "2015", "major_formats": ["Vinyl"], "format": "LP, Album, Reissue, Remastered",
+                "label": "ORG Music"},
+               {"title": "Americana (Happy 10 Bonus Year)", "released": "1998", "major_formats": ["CD"],
+                "format": "Unofficial Release", "label": "Columbia (2)"},
+               {"title": "Americana", "released": "1998", "major_formats": ["Cassette"], "format": "Album", "label": "Columbia"}]
+        )
+        self.assertEqual(discogs.edition_summary(versions), [
+            "1998 · CD · Columbia ×23",
+            "2015 · Vinyl · ORG Music · Remastered, Reissue",
+            "2016 · File (FLAC) · Round Hill Music",
+            "(не показаны: неофициальных изданий 1, кассет и прочих плёнок 1)",
+        ])
