@@ -338,7 +338,7 @@ def credit_track(title: str, artists: list[str], album_artists: list[str],
     Title and artist values of a track under the library's credit rule:
     featured guests are artists (moved out of the title), remixers are not
     (their "(X Remix)" stays in the title).  The matching track of a Discogs
-    *tracklist* supplies guests and remixers by role when available.
+    *tracklist* supplies the track artists, guests and remixers when available.
     """
     title, guests = split_featuring(title)
     discogs_track = _find_track(tracklist, title) if tracklist else None
@@ -349,6 +349,10 @@ def credit_track(title: str, artists: list[str], album_artists: list[str],
         split_artists.append(main.strip())
         guests = _split_names(rest[0]) + guests if rest else guests
     artists = [a for a in split_artists if a]
+    if discogs_track and discogs_track.get("artists"):
+        # Discogs names every track artist as its own entity: "Code Rising; HollowGraphiK",
+        # where a store wrote "HollowGraphik + Code Rising" (but "+" can be part of a name)
+        artists = split_multi_value(discogs_track["artists"])
     remixers = {name_key(m.group(1)) for m in _REMIX_RE.finditer(title)}
     if discogs_track:
         guests = [g for g in discogs_track.get("featuring", []) if name_key(g) not in _PLACEHOLDER_ARTISTS] or guests

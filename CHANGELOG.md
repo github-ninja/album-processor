@@ -22,6 +22,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   carries reading scales for DR, flat tops and true peak.
 
 ### Fixed
+- Track artists come from Discogs when it names them: a store's "HollowGraphik + Code Rising"
+  becomes "Code Rising; HollowGraphiK" ("+" is not split blindly: Florence + the Machine).
 - Folder names like "2000 M3" (year and title without a dash) are understood.
 - Titles match across compatibility forms, accents and bracketed subtitles:
   "M3" finds Discogs' "M³ (Daily Assortment Of Sound)".

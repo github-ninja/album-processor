@@ -128,6 +128,17 @@ class TrackCredits(unittest.TestCase):
                          ("Soul Arcs (Samuel Marquis Remix)", ["False Noise", "Hudson Lee"]))
         self.assertEqual(self.credit("Fearless", ["Hudson Lee"], tracklist=tracklist), ("Fearless", ["Hudson Lee", "Laura Brehm"]))
 
+    def test_discogs_track_artists_replace_a_joined_store_credit(self):
+        tracklist = [{"title": "Got That Boom", "artists": "Code Rising; HollowGraphiK", "featuring": [], "remixers": []},
+                     {"title": "Don't Stop The Beat", "artists": "Code Rising; Gucci Bass; E.P.G.", "featuring": [],
+                      "remixers": []}]
+        self.assertEqual(self.credit("Got That Boom", ["HollowGraphik + Code Rising"], ["Code Rising"], tracklist),
+                         ("Got That Boom", ["Code Rising", "HollowGraphiK"]))
+        self.assertEqual(self.credit("Don't Stop The Beat", ["Code Rising + Gucci Bass", "E.P.G."], ["Code Rising"],
+                                     tracklist), ("Don't Stop The Beat", ["Code Rising", "Gucci Bass", "E.P.G."]))
+        # Without Discogs, "+" stays: it can be part of a name
+        self.assertEqual(self.credit("Dog Days", ["Florence + the Machine"]), ("Dog Days", ["Florence + the Machine"]))
+
     def test_discogs_placeholder_and_punctuation_variants(self):
         tracklist = [{"title": "Alien Report", "featuring": ["Unknown Artist"], "remixers": []},
                      {"title": "Plasticworld", "featuring": ["MC Fats", "T.C."], "remixers": []}]
