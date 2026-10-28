@@ -38,6 +38,10 @@ class CleanFolderName(unittest.TestCase):
         for title in ("Omni Trio - Even Angels", "Omni Trio – Even Angels", "omni trio — Even Angels"):
             self.assertEqual(names.strip_artist_prefix(title, "Omni Trio"), "Even Angels")
         self.assertEqual(names.strip_artist_prefix("Omni Trio", "Omni Trio"), "Omni Trio")
+        # Punctuation a file name could not keep: deezer-downloader's "BremerMcCoy - Ordet"
+        for title in ("BremerMcCoy - Ordet", "Bremer-McCoy - Ordet", "Bremer/McCoy – Ordet"):
+            self.assertEqual(names.strip_artist_prefix(title, "Bremer/McCoy"), "Ordet")
+        self.assertEqual(names.strip_artist_prefix("Jean-Michel Jarre - Oxygene", "Jean"), "Jean-Michel Jarre - Oxygene")
 
 
 class FileNames(unittest.TestCase):

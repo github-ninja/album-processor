@@ -28,6 +28,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   downloading); partly available albums are moved to `deezer/incomplete/`.
 
 ### Fixed
+- An "Artist - Album" folder is recognised when file names dropped the artist's punctuation:
+  deezer-downloader's "BremerMcCoy - Ordet" for "Bremer/McCoy".
 - Track artists come from Discogs when it names them: a store's "HollowGraphik + Code Rising"
   becomes "Code Rising; HollowGraphiK" ("+" is not split blindly: Florence + the Machine).
 - Folder names like "2000 M3" (year and title without a dash) are understood.

@@ -102,9 +102,15 @@ def strip_artist_prefix(title: str, artist: str) -> str:
     """
     Remove a leading "Artist - " prefix from *title* if it duplicates *artist*:
     strip_artist_prefix("Omni Trio - Even Angels", "Omni Trio") → "Even Angels".
+    The artist may be spelt with other punctuation, as file names force it:
+    "BremerMcCoy - Ordet" for "Bremer/McCoy".
     """
-    prefix = re.escape(artist.strip()) + r"\s*[-–—]\s*"
-    return re.sub(f"^{prefix}", "", title, flags=re.IGNORECASE).strip()
+    key = name_key(artist).replace(" ", "")
+    # A hyphen inside a name ("Jean-Michel", "Bremer-McCoy") is not a separator
+    for separator in re.finditer(r"\s+[-–—]\s+|\s*[–—]\s*", title):
+        if key and name_key(title[:separator.start()]).replace(" ", "") == key:
+            return title[separator.end():].strip() or title.strip()
+    return title.strip()
 
 
 def clean_text(value: str) -> str:
