@@ -73,6 +73,18 @@ class ProcessDownload(TempLibraryCase):
                          ["Dissident", "Cyberworm", "Camo & Krooked"])
         self.assertEqual(FLAC(dest / "02. Dissident & Skrillex - Horizon.flac")["artist"], ["Dissident", "Skrillex"])
 
+    def test_album_unknown_to_discogs_is_listed_for_the_summary(self):
+        state = pipeline.RunState()
+        with mock.patch.object(discogs, "fetch_album", return_value=None):
+            self.assertTrue(pipeline.process_album(pipeline.find_new_albums()[0], state))
+        self.assertEqual(len(state.not_found), 1)
+        self.assertTrue(state.not_found[0].startswith("Dissident & Cyberworm — "))
+        found = pipeline.RunState()
+        make_flac(self.downloads / "Plaid" / "Spokes" / "01.flac", tracknumber="1", title="Even Spring", artist="Plaid")
+        with mock.patch.object(discogs, "fetch_album", return_value={**DISCOGS_ALBUM, "artist": "Plaid", "title": "Spokes"}):
+            pipeline.process_album(pipeline.find_new_albums()[0], found)
+        self.assertEqual(found.not_found, [])
+
     def test_alac_track_becomes_flac(self):
         (self.album / "02.flac").unlink()
         make_m4a(self.album / "02.m4a", sr=48000, sample_format="s32p",

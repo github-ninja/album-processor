@@ -49,6 +49,12 @@ def _process(paths: list[str]) -> int:
     if config.DEFERRED_REPORT_FILE:
         Path(config.DEFERRED_REPORT_FILE).write_text(json.dumps(state.deferred + state.processed, ensure_ascii=False),
                                                      encoding="utf-8")
+    if state.not_found:
+        # At the end too: a misspelt artist is easy to miss in the middle of the log
+        log.warning("\n⚠️ Не найдены в Discogs — год и жанр не проставлены (%d):", len(state.not_found))
+        for line in state.not_found:
+            log.warning("  • %s", line)
+        log.warning("Проверь написание исполнителя (например, кириллица вместо латиницы) и запусти заново.")
     if state.flagged:
         # Repeated at the end: the Telegram bot only shows the tail of long logs
         log.warning("\n🚩 Подозрение на апконверт (%d):", len(state.flagged))

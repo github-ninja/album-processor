@@ -46,6 +46,7 @@ class AlbumInfo:
     tracklist: list[dict] = field(default_factory=list)  # [{position, title}] from Discogs
     download_artist: str = ""  # the download's shorter credit when Discogs lists more artists
     release_types: list[str] = field(default_factory=list)  # RELEASETYPE from Discogs
+    from_discogs: bool = False  # False: title and artist are the download's own, no year or genre
 
 
 @dataclass
@@ -54,6 +55,7 @@ class RunState:
     flagged: list[str] = field(default_factory=list)   # suspected upconverts, for the summary
     deferred: list[dict] = field(default_factory=list)  # left in downloads for the bot to ask about
     processed: list[dict] = field(default_factory=list)  # moved to the library, for the bot's opinion buttons
+    not_found: list[str] = field(default_factory=list)  # filed without Discogs data, for the summary
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +208,7 @@ def resolve_album_info(candidate: AlbumCandidate) -> Optional[AlbumInfo]:
             tracklist=found.get("tracklist", []),
             download_artist=download_artist,
             release_types=found.get("release_types", []),
+            from_discogs=True,
         )
         log.info("✅ Discogs match: %s – %s (%s) | genre: %s",
                  info.artist, info.album, info.year or "?", info.genre or "—")
@@ -496,6 +499,8 @@ def process_album(candidate: AlbumCandidate, state: RunState) -> Optional[bool]:
                             "name": f"{info.artist.split(';')[0]} — {info.album}"})
     for line in quality.describe(measured):
         log.info(line)
+    if not info.from_discogs:
+        state.not_found.append(f"{info.artist.split(';')[0]} — {info.album}")
     _cleanup_empty_download_dir(candidate.artist)
 
     log.info("✅ Album processed successfully!")
