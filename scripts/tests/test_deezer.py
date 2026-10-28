@@ -10,6 +10,11 @@ def reply(payload) -> mock.Mock:
     return mock.Mock(status_code=200, json=mock.Mock(return_value=payload))
 
 
+def done(task_id: int, result: str) -> list[mock.Mock]:
+    """A queued task that finished with *result* at the first look."""
+    return [reply({"task_id": task_id}), reply([{"id": task_id, "state": "mission accomplished", "result": result}])]
+
+
 class DeezerDownloader(TempLibraryCase):
     def setUp(self):
         super().setUp()
@@ -40,15 +45,26 @@ class DeezerDownloader(TempLibraryCase):
                 mock.patch.object(deezer_dl, "_track_count", return_value=1):
             self.assertEqual(deezer_dl.download(2), album)
 
+    def test_missing_tracks_are_fetched_again(self):
+        album = self.base / "albums" / "Arovane - Lilies"
+        make_flac(album / "01 - Arovane Pulse.flac")
+        make_flac(self.base / "incomplete" / "Arovane - Lilies" / "01 - Arovane Pulse.flac")  # an earlier try
+        one = "[&#39;albums/Arovane - Lilies/01 - Arovane Pulse.flac&#39;]"
+        two = "[&#39;albums/Arovane - Lilies/01 - Arovane Pulse.flac&#39;, &#39;albums/Arovane - Lilies/02 - Arovane Tides.flac&#39;]"
+        with mock.patch.object(deezer_dl.requests, "request",
+                               side_effect=done(7, one) + done(8, two)) as request, \
+                mock.patch.object(deezer_dl, "_track_count", return_value=2):
+            self.assertEqual(deezer_dl.download(2), album)
+        self.assertEqual([c.args[1] for c in request.call_args_list].count("http://deezer:5000/download"), 2)
+        self.assertFalse((self.base / "incomplete" / "Arovane - Lilies").exists())
+
     def test_empty_or_partial_download_is_not_an_album(self):
         make_flac(self.base / "albums" / "Arovane - Lilies" / "01 - Arovane Pulse.flac")
-        done = lambda result: [reply({"task_id": 7}), reply([{"id": 7, "state": "mission accomplished",  # noqa: E731
-                                                              "result": result}])]
-        with mock.patch.object(deezer_dl.requests, "request", side_effect=done("[]")):
+        with mock.patch.object(deezer_dl.requests, "request", side_effect=done(7, "[]") * 3):
             with self.assertRaisesRegex(deezer_dl.DeezerError, "ни одного трека"):
                 deezer_dl.download(2)
         result = "[&#39;albums/Arovane - Lilies/01 - Arovane Pulse.flac&#39;]"
-        with mock.patch.object(deezer_dl.requests, "request", side_effect=done(result)), \
+        with mock.patch.object(deezer_dl.requests, "request", side_effect=done(7, result) * 3), \
                 mock.patch.object(deezer_dl, "_track_count", return_value=12):
             with self.assertRaisesRegex(deezer_dl.DeezerError, "только 1 из 12"):
                 deezer_dl.download(2)

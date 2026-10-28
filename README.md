@@ -107,8 +107,9 @@ with any player that reads tags.
 - Albums already in the library are marked ✅; downloading one anyway goes through
   the usual passport comparison before anything is replaced.
 - `/newreleases` puts a *⬇️ download* button under every new album it finds.
-- An album Deezer can only partly deliver is not filed: it is moved to
-  `deezer/incomplete/`.  `/newalbum` also picks up albums downloaded through
+- Deezer refuses tracks now and then: a partial download is queued again (only the
+  missing tracks are fetched), up to three tries.  An album still incomplete is not
+  filed: it is moved to `deezer/incomplete/`.  `/newalbum` also picks up albums downloaded through
   deezer-downloader's own web UI — but not while it is still downloading.
 
 **Library maintenance — `/fixlibrary`**

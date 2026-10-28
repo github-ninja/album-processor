@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 _TIMEOUT = 20
 _POLL_SECONDS = 5
 _DOWNLOAD_TIMEOUT = 30 * 60
+_RETRY_PAUSES = [15, 45]  # seconds before the 2nd and 3rd attempt
 
 
 class DeezerError(RuntimeError):
@@ -101,12 +102,11 @@ def _track_count(album_id: int) -> Optional[int]:
         return None
 
 
-def download(album_id: int, timeout: float = _DOWNLOAD_TIMEOUT) -> Path:
-    """Queue the album, wait until deezer-downloader has it, return its folder."""
+def _run_task(album_id: int, deadline: float) -> list[str]:
+    """Queue the album once and wait for the task: the files it has (downloaded or already there)."""
     task_id = _call("POST", "/download", json={"type": "album", "music_id": album_id,
                                                "add_to_playlist": False, "create_zip": False})["task_id"]
     log.info("⬇️  Deezer album %s queued (task %s)", album_id, task_id)
-    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         task = next((t for t in _queue() if t.get("id") == task_id), None)
         if task is None:
@@ -115,22 +115,48 @@ def download(album_id: int, timeout: float = _DOWNLOAD_TIMEOUT) -> Path:
             raise DeezerError(f"deezer-downloader не смог скачать альбом: {html.unescape(task.get('exception', ''))}")
         if task.get("state") == "mission accomplished":
             # deezer-downloader skips tracks it cannot get and still calls the task done
-            files = _downloaded_files(task.get("result", ""))
-            if not files:
-                raise DeezerError("Deezer не отдал ни одного трека — альбом недоступен в вашей стране "
-                                  "или в нужном качестве")
-            album_dir = config.DEEZER_DOWNLOADER_DIR / Path(files[0]).parent
-            if not album_dir.is_dir():
-                raise DeezerError(f"скачано, но папка альбома не найдена: {album_dir} "
-                                  "(проверьте DEEZER_DOWNLOADER_DIR)")
-            total = _track_count(album_id)
-            if total and len(files) < total:
-                # Out of the albums folder, or /newalbum would file it as if it were whole
-                aside = config.DEEZER_DOWNLOADER_DIR / "incomplete" / album_dir.name
-                aside.parent.mkdir(exist_ok=True)
-                shutil.move(str(album_dir), str(aside))
-                raise DeezerError(f"скачано только {len(files)} из {total} треков — часть альбома недоступна "
-                                  f"на Deezer. Неполный альбом не обработан, он в {aside.relative_to(config.DOWNLOADS_PATH)}")
-            return album_dir
+            return _downloaded_files(task.get("result", ""))
         time.sleep(_POLL_SECONDS)
     raise DeezerError("скачивание не закончилось за 30 минут")
+
+
+def download(album_id: int, timeout: float = _DOWNLOAD_TIMEOUT) -> Path:
+    """
+    Queue the album, wait until deezer-downloader has it, return its folder.
+    Deezer refuses tracks now and then and gives them a minute later: a short
+    album is queued again (deezer-downloader keeps the tracks it already has
+    and fetches only the missing ones), up to _ATTEMPTS times in all.
+    """
+    deadline = time.monotonic() + timeout
+    total = _track_count(album_id)
+    for attempt, pause in enumerate(_RETRY_PAUSES + [None], start=1):
+        files = _run_task(album_id, deadline)
+        if files and (not total or len(files) >= total):
+            break
+        if pause is None:
+            break
+        log.info("🔁 Deezer gave %d of %s tracks — trying again in %d s (attempt %d of %d)",
+                 len(files), total or "?", pause, attempt + 1, len(_RETRY_PAUSES) + 1)
+        time.sleep(pause)
+
+    if not files:
+        raise DeezerError(f"Deezer не отдал ни одного трека ни с одной из {len(_RETRY_PAUSES) + 1} попыток — "
+                          "альбом недоступен в вашей стране или в нужном качестве")
+    album_dir = config.DEEZER_DOWNLOADER_DIR / Path(files[0]).parent
+    if not album_dir.is_dir():
+        raise DeezerError(f"скачано, но папка альбома не найдена: {album_dir} (проверьте DEEZER_DOWNLOADER_DIR)")
+    if total and len(files) < total:
+        # Out of the albums folder, or /newalbum would file it as if it were whole
+        aside = config.DEEZER_DOWNLOADER_DIR / "incomplete" / album_dir.name
+        aside.parent.mkdir(exist_ok=True)
+        if aside.exists():
+            shutil.rmtree(aside)  # an older incomplete copy of the same album
+        shutil.move(str(album_dir), str(aside))
+        raise DeezerError(f"после {len(_RETRY_PAUSES) + 1} попыток скачано только {len(files)} из {total} треков — "
+                          f"часть альбома недоступна на Deezer. Неполный альбом не обработан, он в "
+                          f"{aside.relative_to(config.DOWNLOADS_PATH)}")
+    stale = config.DEEZER_DOWNLOADER_DIR / "incomplete" / album_dir.name
+    if stale.is_dir():
+        shutil.rmtree(stale)  # an earlier incomplete try: the album is whole now
+        log.info("🗑️  Removed the earlier incomplete copy: %s", stale.name)
+    return album_dir

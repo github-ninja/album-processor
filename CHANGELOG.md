@@ -21,6 +21,11 @@ versions follow [Semantic Versioning](https://semver.org/).
   An overloaded model (HTTP 503) hands over to `GEMINI_FALLBACK_MODEL`; the prompt
   carries reading scales for DR, flat tops and true peak.
 
+### Added — Deezer retries
+- A partial Deezer download is queued again, up to three tries in all; deezer-downloader
+  keeps the tracks it has and fetches the missing ones.  A whole album clears its earlier
+  copy from `deezer/incomplete/`.
+
 ### Added — not found in Discogs
 - The import report ends with the albums Discogs did not know (filed without year and
   genre), so a misspelt or transliterated artist is noticed at once.
