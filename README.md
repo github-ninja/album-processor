@@ -101,6 +101,16 @@ with any player that reads tags.
 - Tailored to you: describe your gear and taste in `music/.album_processor/listener.md`.
 - A *💬 album* button under every import report, or `/opinion <name>` for any album.
 
+**Deezer — `/deezer`** *(optional, with [deezer-downloader](https://github.com/kmille/deezer-downloader))*
+- `/deezer <query>` finds albums on Deezer; one tap downloads an album, waits for
+  it and files it like any other download — tags, cover, ReplayGain, passport.
+- Albums already in the library are marked ✅; downloading one anyway goes through
+  the usual passport comparison before anything is replaced.
+- `/newreleases` puts a *⬇️ download* button under every new album it finds.
+- An album Deezer can only partly deliver is not filed: it is moved to
+  `deezer/incomplete/`.  `/newalbum` also picks up albums downloaded through
+  deezer-downloader's own web UI — but not while it is still downloading.
+
 **Library maintenance — `/fixlibrary`**
 - Checks every album against the conventions and shows a plan before touching
   anything: apply all, go through it one by one, or cancel.
@@ -201,6 +211,8 @@ To update: `git pull && docker compose up -d --build`.
 | `GEMINI_MODEL` | | `gemini-3.6-flash` | Any Gemini text model |
 | `GEMINI_FALLBACK_MODEL` | | `gemini-3.5-flash-lite` | Asked when the main model is overloaded (HTTP 503) or silent |
 | `GEMINI_PROXY` | | — | Proxy for Gemini requests only, where the API is not available in your country |
+| `DEEZER_DOWNLOADER_URL` | | `http://deezer-downloader:5000` | deezer-downloader's web address, as Anton's container sees it |
+| `DEEZER_DOWNLOADER_DIR` | | `<downloads>/deezer` | deezer-downloader's download base, as Anton's container sees it |
 | `TZ` | | UTC | Time zone for logs |
 
 `docker-compose.yml` maps `DOWNLOADS_DIR` and `MUSIC_DIR` from `.env` to
@@ -220,6 +232,7 @@ To update: `git pull && docker compose up -d --build`.
 | `/newreleases` | New albums by your artists (Deezer), checked now. |
 | `/newreleases daily` / `weekly` / `monthly` / `stop` / `status` | Automatic checks: turn on, off, show. Off until you turn them on. |
 | `/opinion <name>` | Anton's opinion on an album: mastering and editions (needs `GEMINI_API_KEY`). |
+| `/deezer <query>` | Find an album on Deezer, download and file it (needs deezer-downloader). |
 | `/help` | List the commands. |
 
 The bot fills its `/` command menu itself on start — in your chat only; no BotFather setup needed.
@@ -263,6 +276,7 @@ scripts/
 │   ├── replaygain.py     EBU R128 loudness and true peaks
 │   ├── quality.py        mastering passport: DR, clipping, grades, /quality
 │   ├── opinion.py        Anton's opinion: dossier of facts → Gemini
+│   ├── deezer_dl.py      downloads through deezer-downloader
 │   ├── releases.py       new albums of the library's artists (Deezer), schedules
 │   ├── upconvert.py      spectral detection of lossy sources
 │   ├── files.py          filesystem helpers and the journal

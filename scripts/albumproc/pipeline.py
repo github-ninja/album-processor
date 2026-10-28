@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from . import audioformat, config, covers, cue, discogs, quality, replaygain, upconvert
+from . import audioformat, config, covers, cue, deezer_dl, discogs, quality, replaygain, upconvert
 from .files import (
     album_audio_files, disc_dir_number, find_or_create_artist_dir, is_album_dir, move_aside,
     normalize_permissions, remove_non_music_files, safe_rename,
@@ -61,14 +61,27 @@ class RunState:
 # ---------------------------------------------------------------------------
 
 def find_new_albums() -> list[AlbumCandidate]:
-    """Album folders in DOWNLOADS_PATH (nested or flat layout; hidden folders ignored)."""
+    """
+    Album folders in DOWNLOADS_PATH (nested or flat layout; hidden folders
+    ignored), plus the albums of deezer-downloader — unless it is still
+    downloading: a half-written album must not be filed.
+    """
     if not config.DOWNLOADS_PATH.exists():
         log.warning("⚠️  Downloads path does not exist: %s", config.DOWNLOADS_PATH)
         return []
 
     candidates = []
+    deezer_albums = config.DEEZER_DOWNLOADER_DIR / "albums"
+    if deezer_albums.is_dir():
+        if deezer_dl.busy():
+            log.info("⏳ deezer-downloader is still downloading — its albums are left for the next run.")
+        else:
+            candidates += [AlbumCandidate(path=d, artist=None) for d in sorted(deezer_albums.iterdir())
+                           if d.is_dir() and not d.name.startswith(".") and is_album_dir(d)]
     for entry in sorted(config.DOWNLOADS_PATH.iterdir()):
-        if not entry.is_dir() or entry.name.startswith((".", "$")):
+        # deezer-downloader's folder: its albums are taken above, songs and playlists are not albums
+        if (not entry.is_dir() or entry.name.startswith((".", "$"))
+                or entry.resolve() == config.DEEZER_DOWNLOADER_DIR.resolve()):
             continue
         if is_album_dir(entry):
             candidates.append(AlbumCandidate(path=entry, artist=None))
@@ -80,9 +93,14 @@ def find_new_albums() -> list[AlbumCandidate]:
 
 
 def candidate_from_path(path: Path) -> AlbumCandidate:
-    """Candidate for an album folder given on the command line."""
-    artist = None if path.parent.resolve() == config.DOWNLOADS_PATH.resolve() else path.parent.name
-    return AlbumCandidate(path=path, artist=artist)
+    """
+    Candidate for an album folder given on the command line: "downloads/Artist/Album"
+    names its artist, other places (deezer-downloader's albums/) do not.
+    """
+    parent = path.resolve().parent
+    named = (parent.parent == config.DOWNLOADS_PATH.resolve()
+             and parent != config.DEEZER_DOWNLOADER_DIR.resolve())
+    return AlbumCandidate(path=path, artist=parent.name if named else None)
 
 
 # ---------------------------------------------------------------------------

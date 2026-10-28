@@ -36,6 +36,14 @@ DEFERRED_REPORT_FILE = os.environ.get("DEFERRED_REPORT_FILE", "")
 # Optional Discogs personal access token: raises the rate limit from 25 to 60 req/min
 DISCOGS_TOKEN = os.environ.get("DISCOGS_TOKEN", "")
 
+# deezer-downloader (github.com/kmille/deezer-downloader): /deezer downloads albums
+# through its HTTP endpoints; its download base must be visible to Anton too
+DEEZER_DOWNLOADER_URL = os.environ.get("DEEZER_DOWNLOADER_URL", "http://deezer-downloader:5000")
+DEEZER_DOWNLOADER_DIR = Path(os.environ.get("DEEZER_DOWNLOADER_DIR", str(DOWNLOADS_PATH / "deezer")))
+
+# JSON list of the new albums a release check found, for the bot's download buttons (set by the bot)
+RELEASES_REPORT_FILE = os.environ.get("RELEASES_REPORT_FILE", "")
+
 # Optional: Anton's opinions on albums (opinion.py) — a Gemini API key from
 # aistudio.google.com; the free tier is plenty.  GEMINI_PROXY routes only these
 # requests (e.g. "socks5h://host:1080" or "http://host:3128") for servers in

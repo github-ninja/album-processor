@@ -100,17 +100,18 @@ def _is_allowed(update: Update) -> bool:
 # Processor helpers
 # ---------------------------------------------------------------------------
 
-async def _run_processor(args: list[str], env_overrides: dict[str, str]) -> subprocess.CompletedProcess:
+async def _run_processor(args: list[str], env_overrides: dict[str, str],
+                         exclusive: bool = True) -> subprocess.CompletedProcess:
+    """Run album_processor.py; *exclusive* runs (everything that moves files) go one at a time."""
     env = {**os.environ, **env_overrides}
+
+    def run() -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, PROCESSOR_SCRIPT, *args], capture_output=True, text=True, env=env)
+
+    if not exclusive:
+        return await asyncio.to_thread(run)
     async with _processor_lock:
-        return await asyncio.to_thread(
-            lambda: subprocess.run(
-                [sys.executable, PROCESSOR_SCRIPT, *args],
-                capture_output=True,
-                text=True,
-                env=env,
-            )
-        )
+        return await asyncio.to_thread(run)
 
 
 async def _reply_with_output(message: Message, result: subprocess.CompletedProcess) -> None:
@@ -253,6 +254,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/newreleases — новые альбомы ваших исполнителей; /newreleases weekly (daily, monthly) — "
         "проверять автоматически, /newreleases stop — выключить\n"
         "/opinion <название> — моё мнение об альбоме: мастер и издания\n"
+        "/deezer <запрос> — найти альбом на Deezer, скачать и сразу обработать\n"
         "/help     — это сообщение\n\n"
         "Образ альбома с CUE режется на треки; хайрез, ALAC, APE и WAV приводятся к FLAC 16/44.1. "
         "Теги и обложка — по Discogs и Deezer, громкость — ReplayGain. "
@@ -365,7 +367,7 @@ async def cmd_newreleases(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if action == "check":
         await update.message.reply_text("⏳ Ищу новые альбомы ваших исполнителей на Deezer…")
     try:
-        result = await _run_processor(["--releases", action], {})
+        result, news = await _check_releases(action)
     except Exception as exc:
         await update.message.reply_text(f"❌ Не удалось запустить скрипт:\n{exc}")
         log.exception("Failed to run processor")
@@ -384,6 +386,25 @@ async def cmd_newreleases(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         ]])
     await update.message.reply_text(result.stdout.strip() or "—", reply_markup=markup,
                                     link_preview_options=_NO_PREVIEW)
+    await _offer_downloads(context.bot, news)
+
+
+async def _check_releases(action: str) -> tuple[subprocess.CompletedProcess, list[dict]]:
+    """A --releases run and the new albums it found (for download buttons)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        report_file = Path(tmp) / "releases.json"
+        result = await _run_processor(["--releases", action], {"RELEASES_REPORT_FILE": str(report_file)})
+        try:
+            news = json.loads(report_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            news = []
+    return result, news
+
+
+async def _offer_downloads(bot, news: list[dict]) -> None:
+    if news:
+        await bot.send_message(ALLOWED_ID, "Скачать с Deezer и добавить в медиатеку?",
+                               reply_markup=_deezer_keyboard([{**a, "in_library": False} for a in news]))
 
 
 async def on_releases_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -405,15 +426,71 @@ async def _scheduled_releases(app: Application) -> None:
     await asyncio.sleep(60)
     while True:
         try:
-            result = await _run_processor(["--releases", "due"], {})
+            result, news = await _check_releases("due")
             text = result.stdout.strip()
             if result.returncode != 0:
                 log.warning("Scheduled release check failed: %s", result.stderr.strip()[-500:])
             elif text:
                 await app.bot.send_message(ALLOWED_ID, text, link_preview_options=_NO_PREVIEW)
+                await _offer_downloads(app.bot, news)
         except Exception:  # noqa: BLE001 — keep polling; the next hour may work
             log.exception("Scheduled release check failed")
         await asyncio.sleep(_RELEASES_POLL_SECONDS)
+
+
+# Albums offered for download: short id → {"id", "artist", "title"}
+_deezer_albums: dict[str, dict] = {}
+
+
+def _deezer_keyboard(albums: list[dict]) -> Optional[InlineKeyboardMarkup]:
+    rows = []
+    for album in albums[:10]:
+        key = uuid.uuid4().hex[:12]
+        _deezer_albums[key] = album
+        mark = "✅ " if album.get("in_library") else "⬇️ "
+        rows.append([InlineKeyboardButton(f"{mark}{album['artist']} — {album['title']}"[:60], callback_data=f"dz:{key}")])
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+async def cmd_deezer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update):
+        return
+    query = " ".join(context.args or [])
+    if not query:
+        await update.message.reply_text("Что искать? /deezer <исполнитель и/или альбом>")
+        return
+    result = await _run_processor(["--deezer", "search", query], {}, exclusive=False)
+    try:
+        albums = json.loads(result.stdout)
+    except ValueError:
+        await update.message.reply_text(result.stdout.strip() or result.stderr.strip()[-500:] or "❌ Ошибка поиска")
+        return
+    if not albums:
+        await update.message.reply_text("На Deezer ничего не нашлось.")
+        return
+    note = "\n✅ — уже есть в медиатеке" if any(a["in_library"] for a in albums) else ""
+    await update.message.reply_text(f"Нашёл на Deezer — какой скачать?{note}", reply_markup=_deezer_keyboard(albums))
+
+
+async def on_deezer_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not _is_allowed(update):
+        await query.answer()
+        return
+    album = _deezer_albums.pop(query.data.split(":", 1)[1], None)
+    if album is None:
+        await query.answer("Кнопка устарела — поищи заново через /deezer")
+        return
+    await query.answer("Ставлю в очередь…")
+    name = f"{album['artist']} — {album['title']}"
+    status = await query.message.reply_text(f"⬇️ Скачиваю с Deezer: {name}…")
+    # Downloading takes minutes: not exclusive, other commands keep working meanwhile
+    result = await _run_processor(["--deezer", "download", str(album["id"])], {}, exclusive=False)
+    if result.returncode != 0:
+        await status.edit_text(f"{result.stdout.strip() or result.stderr.strip()[-500:]}\n({name})")
+        return
+    await status.edit_text(f"✅ Скачано: {name}. Обрабатываю…")
+    await _process(query.message, [result.stdout.strip()], {"UPCONVERT_ACTION": UPCONVERT_ACTION})
 
 
 async def cmd_quality(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -727,6 +804,7 @@ COMMANDS = [
     ("quality", "Паспорт мастеринга (quality <название> — подробно)", cmd_quality),
     ("newreleases", "Новые альбомы ваших исполнителей (daily/weekly/monthly/stop — расписание)", cmd_newreleases),
     ("opinion", "Мнение Антона об альбоме: мастер и издания (opinion <название>)", cmd_opinion),
+    ("deezer", "Найти альбом на Deezer, скачать и добавить в медиатеку (deezer <запрос>)", cmd_deezer),
     ("help", "Список команд", cmd_help),
 ]
 
@@ -756,6 +834,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_upconvert_decision, pattern=r"^up:"))
     app.add_handler(CallbackQueryHandler(on_releases_schedule, pattern=r"^nr:"))
     app.add_handler(CallbackQueryHandler(on_opinion, pattern=r"^op:"))
+    app.add_handler(CallbackQueryHandler(on_deezer_download, pattern=r"^dz:"))
 
     log.info("Bot started. Waiting for commands from user ID %d…", ALLOWED_ID)
     app.run_polling(drop_pending_updates=True)

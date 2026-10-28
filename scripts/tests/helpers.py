@@ -79,7 +79,8 @@ class TempLibraryCase(unittest.TestCase):
         self.music = self.tmp / "music"
         self.downloads.mkdir()
         self.music.mkdir()
-        for name, value in (("DOWNLOADS_PATH", self.downloads), ("MUSIC_PATH", self.music)):
+        for name, value in (("DOWNLOADS_PATH", self.downloads), ("MUSIC_PATH", self.music),
+                            ("DEEZER_DOWNLOADER_DIR", self.downloads / "deezer"), ("DEEZER_DOWNLOADER_URL", "")):
             patcher = mock.patch.object(config, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
