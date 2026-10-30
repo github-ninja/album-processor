@@ -37,6 +37,11 @@ versions follow [Semantic Versioning](https://semver.org/).
   downloading); partly available albums are moved to `deezer/incomplete/`.
 
 ### Fixed
+- Suppress HTTP client INFO logs in the bot, including routine Telegram polling
+  requests whose URLs contain the bot token; warnings and errors remain visible.
+- Artist matching recognises Latin letters that Unicode decomposition leaves intact
+  ("Trentemoller" / "Trentemøller"): artist prefixes are removed before Discogs
+  searches, and matched albums and tracks take the original artist spelling.
 - An "Artist - Album" folder is recognised when file names dropped the artist's punctuation:
   deezer-downloader's "BremerMcCoy - Ordet" for "Bremer/McCoy".
 - Track artists come from Discogs when it names them: a store's "HollowGraphik + Code Rising"

@@ -273,13 +273,18 @@ _REMIX_RE = re.compile(
 # Discogs placeholders, not names
 _PLACEHOLDER_ARTISTS = {"unknown artist", "no artist", "various", "anonymous"}
 
+# These Latin letters do not decompose into their ASCII equivalents under NFKD.
+_LATIN_NAME_FOLD = str.maketrans({
+    "ø": "o", "ł": "l", "đ": "d", "ð": "d", "þ": "th", "æ": "ae", "œ": "oe",
+})
+
 
 def name_key(name: str) -> str:
     """
     Case-, accent- and punctuation-insensitive form of a name: "Fejká" and
-    "fejka", "T.C." and "TC" are the same person.
+    "fejka", "Trentemøller" and "Trentemoller", "T.C." and "TC" are the same person.
     """
-    decomposed = unicodedata.normalize("NFKD", clean_text(name).casefold())
+    decomposed = unicodedata.normalize("NFKD", clean_text(name).casefold()).translate(_LATIN_NAME_FOLD)
     return "".join(c for c in decomposed if c.isalnum() or c == " ").strip()
 
 

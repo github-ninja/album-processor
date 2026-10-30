@@ -245,6 +245,35 @@ class AlbumFolderNamedAfterArtist(TempLibraryCase):
         self.assertEqual((info.album, info.year, info.genre), ("In Utero (24kt Gold Plated)", "", ""))
 
 
+class DiscogsTransliteratedArtist(TempLibraryCase):
+    def test_folder_prefix_and_track_artists_use_the_same_name_comparison(self):
+        album = self.downloads / "Trentemøller - The Last Resort - 2006 [Poker Flat; PFRCD18]"
+        titles = ["Take Me Into Your Skin", "Vamp", "Evil Dub"]
+        for n, title in enumerate(titles, 1):
+            make_flac(album / f"{n:02}.flac", tracknumber=str(n), title=title,
+                      artist="Trentemoller", albumartist="Trentemoller", album="The Last Resort")
+        results = [{"title": "Trentemøller - The Last Resort", "resource_url": "release"}]
+        release = {"title": "The Last Resort", "year": 2006, "artists": [{"name": "Trentemøller"}],
+                   "styles": ["Minimal", "Techno"],
+                   "tracklist": [{"position": str(n), "title": title} for n, title in enumerate(titles, 1)]}
+        state = pipeline.RunState()
+        with mock.patch.object(discogs, "search", return_value=results) as search, \
+                mock.patch.object(discogs, "api_get", return_value=release), \
+                mock.patch.object(covers, "fetch_deezer_cover", return_value=None), \
+                mock.patch.object(config, "UPCONVERT_ACTION", "warn"):
+            self.assertTrue(pipeline.process_album(pipeline.AlbumCandidate(album, None), state))
+        self.assertEqual(search.call_args_list[0].kwargs["release_title"],
+                         "The Last Resort - 2006 [Poker Flat; PFRCD18]")
+        self.assertEqual(state.not_found, [])
+        dest = self.music / "Trentemøller" / "2006 - The Last Resort"
+        for n, title in enumerate(titles, 1):
+            track = FLAC(dest / f"{n:02}. Trentemøller - {title}.flac")
+            self.assertEqual(track["artist"], ["Trentemøller"])
+            self.assertEqual(track["albumartist"], ["Trentemøller"])
+            self.assertEqual(track["album"], ["The Last Resort"])
+            self.assertEqual(track["date"], ["2006"])
+
+
 class DiscogsTitleTypo(TempLibraryCase):
     def test_artist_only_search_finds_a_misspelt_title(self):
         releases = [

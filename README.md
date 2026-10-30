@@ -18,6 +18,8 @@ with any player that reads tags.
 
 > The bot talks to you in Russian; the code, logs and this documentation are in English.
 
+HTTP client logs are limited to warnings and errors; routine Telegram polling is silent.
+
 ## Features
 
 **Import**
@@ -38,6 +40,9 @@ with any player that reads tags.
   genres from Discogs styles.
 - Artist names spelled as the Discogs artist entity ("VIMES" → "Vimes"),
   aliases followed when the tracks agree (a store's "Carl Finlow" → "Silicon Scally").
+- Transliterated Latin letters in artist names match their original spelling
+  ("Trentemoller" = "Trentemøller"), including artist prefixes in album folders;
+  tags and file names keep the spelling from Discogs.
 - Guards against wrong matches: a release whose tracklist does not overlap
   the files (a namesake band's album) is rejected.
 - Another version of an album — *Instrumentals*, *Remixes* — stays a separate

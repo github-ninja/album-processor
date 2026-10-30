@@ -43,6 +43,12 @@ class CleanFolderName(unittest.TestCase):
             self.assertEqual(names.strip_artist_prefix(title, "Bremer/McCoy"), "Ordet")
         self.assertEqual(names.strip_artist_prefix("Jean-Michel Jarre - Oxygene", "Jean"), "Jean-Michel Jarre - Oxygene")
 
+    def test_artist_prefix_with_a_transliterated_letter(self):
+        self.assertEqual(names.strip_artist_prefix("Trentemøller - The Last Resort", "Trentemoller"),
+                         "The Last Resort")
+        self.assertEqual(names.strip_artist_prefix("Trentemoller - The Last Resort", "Trentemøller"),
+                         "The Last Resort")
+
 
 class FileNames(unittest.TestCase):
     def test_sanitize(self):
@@ -67,6 +73,14 @@ class FileNames(unittest.TestCase):
 
 
 class Matching(unittest.TestCase):
+    def test_name_key_folds_latin_letters_without_unicode_decomposition(self):
+        for original, ascii_name in (("Trentemøller", "Trentemoller"), ("Ø", "O"), ("Łódź", "Lodz"),
+                                     ("Đ", "D"), ("ð", "d"), ("Þ", "Th"), ("Æ", "Ae"), ("Œ", "Oe")):
+            with self.subTest(name=original):
+                self.assertEqual(names.name_key(original), names.name_key(ascii_name))
+        self.assertNotEqual(names.name_key("Trentemøller"), names.name_key("Trentemller"))
+        self.assertEqual(names.name_key("Молчат Дома"), "молчат дома")
+
     def test_subtitle_counts_as_match(self):
         self.assertGreaterEqual(names.title_similarity("Illinoize", "Illinoize: The Remix Tape"), 0.8)
 
