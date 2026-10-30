@@ -19,6 +19,8 @@ with any player that reads tags.
 > The bot talks to you in Russian; the code, logs and this documentation are in English.
 
 HTTP client logs are limited to warnings and errors; routine Telegram polling is silent.
+Discogs uses X25519 key exchange for compatibility with network paths that stall
+on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain enabled.
 
 ## Features
 

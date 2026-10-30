@@ -37,6 +37,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   downloading); partly available albums are moved to `deezer/incomplete/`.
 
 ### Fixed
+- Discogs requests use X25519 key exchange to avoid handshake timeouts on network
+  paths incompatible with hybrid post-quantum TLS, retaining TLS 1.3 and certificate checks.
 - Suppress HTTP client INFO logs in the bot, including routine Telegram polling
   requests whose URLs contain the bot token; warnings and errors remain visible.
 - Artist matching recognises Latin letters that Unicode decomposition leaves intact

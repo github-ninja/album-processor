@@ -6,6 +6,7 @@ and canonical artist spelling.
 import logging
 from collections import Counter
 import re
+import ssl
 import time
 from typing import Optional
 
@@ -26,6 +27,20 @@ _HEADERS = {"User-Agent": "AlbumProcessor/4.0"}
 if config.DISCOGS_TOKEN:
     _HEADERS["Authorization"] = f"Discogs token={config.DISCOGS_TOKEN}"
 
+
+class _DiscogsAdapter(requests.adapters.HTTPAdapter):
+    """Use a compact X25519 handshake on paths that stall with hybrid key shares."""
+
+    def init_poolmanager(self, connections, maxsize, block=False, **kwargs):
+        context = ssl.create_default_context()
+        context.set_ecdh_curve("X25519")
+        kwargs["ssl_context"] = context
+        super().init_poolmanager(connections, maxsize, block=block, **kwargs)
+
+
+_SESSION = requests.Session()
+_SESSION.mount(f"{_API}/", _DiscogsAdapter())
+
 # Pre-release copies often predate the actual release year
 _PREVIEW_FORMATS = {"Promo", "Test Pressing", "White Label", "Advance"}
 # Discogs disambiguates same-named artists with a numeric suffix: "Nico (4)"
@@ -39,7 +54,7 @@ _VERSION_GROUP_RE = re.compile(
 def api_get(url: str, **kwargs) -> Optional[dict]:
     """GET a Discogs API URL; waits and retries when rate-limited."""
     for attempt in range(_RETRIES + 1):
-        resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT, **kwargs)
+        resp = _SESSION.get(url, headers=_HEADERS, timeout=_TIMEOUT, **kwargs)
         if resp.status_code != 429 or attempt == _RETRIES:
             # Slow down before the per-minute quota runs out
             remaining = resp.headers.get("X-Discogs-Ratelimit-Remaining", "")
