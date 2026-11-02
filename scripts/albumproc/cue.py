@@ -121,12 +121,15 @@ def split_image(image: Path, sheet: CueSheet, prefix: str = "") -> list[Path]:
     and delete it; returns the tracks.  Nothing is changed when a cut fails.
     """
     tracks = sheet.tracks
-    if any(t.start is None for t in tracks) or [t.start for t in tracks] != sorted(t.start for t in tracks):
+    if (len(tracks) < 2 or any(t.start is None or t.start < 0 or t.number <= 0 for t in tracks)
+            or len({t.number for t in tracks}) != len(tracks)
+            or any(a.start >= b.start for a, b in zip(tracks, tracks[1:]))):
         raise ValueError("CUE sheet has a track without INDEX 01 or out of order")
     targets = [image.with_name(f"{prefix}{t.number:02d}.flac") for t in tracks]
     temps = [image.with_name(f".{prefix}{t.number:02d}.splitting.flac") for t in tracks]
     if any(t.exists() for t in targets):
         raise FileExistsError("track files already exist next to the image")
+    published = []
     try:
         with av.open(str(image)) as container:
             stream = container.streams.audio[0]
@@ -156,12 +159,18 @@ def split_image(image: Path, sheet: CueSheet, prefix: str = "") -> list[Path]:
             raise RuntimeError(f"image is shorter than the CUE sheet ({position} samples)")
 
         fallback = read_tags(image)
-        for track, temp, target in zip(tracks, temps, targets):
+        for track, temp in zip(tracks, temps):
             _write_tags(temp, sheet, track, fallback)
+            temp.chmod(config.FILE_MODE)
+        for temp, target in zip(temps, targets):
             temp.rename(target)
-            target.chmod(config.FILE_MODE)
+            published.append(target)
         image.unlink()
         return targets
+    except Exception:
+        for target in published:
+            target.unlink()
+        raise
     finally:
         for temp in temps:
             temp.unlink(missing_ok=True)

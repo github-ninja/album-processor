@@ -40,15 +40,15 @@ def _spectrogram(file_path: Path) -> tuple[np.ndarray, int, float]:
         positions = np.linspace(0, max(total - _NFFT, 0), _COLUMNS).astype(np.int64)
         power = np.zeros((_COLUMNS, _NFFT // 2 + 1), dtype=np.float32)
 
-        buf = np.zeros(0, dtype=np.float32)
+        buf = np.empty((0, snd.channels), dtype=np.float32)
         buf_start = 0
         col = 0
         for block in snd.blocks(blocksize=_BLOCK, dtype="float32", always_2d=True):
-            buf = np.concatenate([buf, block.mean(axis=1)])
+            buf = np.concatenate([buf, block])
             while col < _COLUMNS and positions[col] + _NFFT <= buf_start + len(buf):
                 off = positions[col] - buf_start
-                spec = np.fft.rfft(buf[off:off + _NFFT] * window)
-                power[col] = np.abs(spec) ** 2
+                spec = np.fft.rfft(buf[off:off + _NFFT] * window[:, None], axis=0)
+                power[col] = (np.abs(spec) ** 2).mean(axis=1)
                 col += 1
             keep_from = min(positions[col] - buf_start, len(buf)) if col < _COLUMNS else len(buf)
             buf = buf[keep_from:]
@@ -57,9 +57,9 @@ def _spectrogram(file_path: Path) -> tuple[np.ndarray, int, float]:
                 break
 
         if col < _COLUMNS and len(buf):  # track shorter than one FFT window
-            seg = np.zeros(_NFFT, dtype=np.float32)
+            seg = np.zeros((_NFFT, snd.channels), dtype=np.float32)
             seg[:len(buf[:_NFFT])] = buf[:_NFFT]
-            power[col:] = np.abs(np.fft.rfft(seg * window)) ** 2
+            power[col:] = (np.abs(np.fft.rfft(seg * window[:, None], axis=0)) ** 2).mean(axis=1)
 
     return power, sr, total / sr if sr else 0.0
 

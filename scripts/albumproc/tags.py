@@ -18,7 +18,7 @@ from typing import Optional
 
 from mutagen.apev2 import APEv2, error as APEError
 from mutagen.flac import FLAC, Picture
-from mutagen.id3 import APIC, ID3, ID3NoHeaderError, TALB, TCON, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
+from mutagen.id3 import APIC, ID3, ID3NoHeaderError, TALB, TCMP, TCON, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK, TXXX
 from mutagen.mp4 import MP4, MP4Cover
 
 from .names import split_multi_value
@@ -100,7 +100,7 @@ def read_tags(file_path: Path) -> dict[str, str]:
                 album_artist="; ".join(audio.get("aART") or []),
                 track_number=str(trkn[0][0]) if trkn else "",
                 disc_number=str(disk[0][0]) if disk else "",
-                genre=first("\xa9gen"),
+                genre="; ".join(audio.get("\xa9gen") or []),
             )
         elif ext == ".ape":
             try:
@@ -164,9 +164,13 @@ def _write_flac_tags(file_path: Path, meta: TrackMetadata) -> None:
 def _write_mp3_tags(file_path: Path, meta: TrackMetadata) -> None:
     try:
         audio = ID3(file_path)
+        pictures = audio.getall("APIC")
         audio.clear()
     except ID3NoHeaderError:
         audio = ID3()
+        pictures = []
+    for picture in pictures:
+        audio.add(picture)
 
     if meta.title:
         audio["TIT2"] = TIT2(text=[meta.title])
@@ -185,16 +189,29 @@ def _write_mp3_tags(file_path: Path, meta: TrackMetadata) -> None:
         audio["TRCK"] = TRCK(text=[f"{meta.track_number}{total}"])
     if meta.disc_number:
         audio["TPOS"] = TPOS(text=[f"{meta.disc_number}/{meta.total_discs}"])
+    for name, values in (("RELEASETYPE", meta.release_types), ("REMIXER", meta.remixers)):
+        if values:
+            audio.add(TXXX(desc=name, text=list(values)))
+    if meta.compilation:
+        audio.add(TCMP(text=["1"]))
     audio.save(file_path, v2_version=4)
 
 
 def _write_m4a_tags(file_path: Path, meta: TrackMetadata) -> None:
     audio = MP4(file_path)
+    pictures = audio.get("covr")
     audio.clear()
     for key, value in (("\xa9ART", meta.artist), ("\xa9nam", meta.title), ("\xa9alb", meta.album),
                        ("\xa9day", meta.date), ("\xa9gen", meta.genre), ("aART", meta.album_artist)):
         if value:
-            audio[key] = [value]
+            audio[key] = split_multi_value(value) if key in ("\xa9ART", "aART", "\xa9gen") else [value]
+    if pictures:
+        audio["covr"] = pictures
+    for name, values in (("RELEASETYPE", meta.release_types), ("REMIXER", meta.remixers)):
+        if values:
+            audio[f"----:com.apple.iTunes:{name}"] = [value.encode("utf-8") for value in values]
+    if meta.compilation:
+        audio["cpil"] = True
     audio["trkn"] = [(meta.track_number, meta.total_tracks)]
     audio["disk"] = [(meta.disc_number, meta.total_discs)]
     audio.save()
@@ -207,12 +224,12 @@ def write_tags(file_path: Path, meta: TrackMetadata) -> None:
     """Replace all tags of *file_path* with *meta* (embedded pictures are kept)."""
     writer = _TAG_WRITERS.get(file_path.suffix.lower())
     if writer is None:
-        log.debug("  ⏭️  Unsupported format for tagging: %s", file_path.name)
-        return
+        raise ValueError(f"unsupported format for tagging: {file_path.name}")
     try:
         writer(file_path, meta)
     except Exception as exc:  # noqa: BLE001
         log.error("  ❌ Failed to write tags for %s: %s", file_path.name, exc)
+        raise
 
 
 def update_album_tags(file_path: Path, album: str, year: str) -> None:

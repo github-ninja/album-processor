@@ -37,6 +37,24 @@ versions follow [Semantic Versioning](https://semver.org/).
   downloading); partly available albums are moved to `deezer/incomplete/`.
 
 ### Fixed
+- Audit hardening: collision-safe batch renames with rollback; strict CUE indices
+  and track numbers; source images retained on tagging failures; unknown audio
+  subfolders and symlinks protected from destructive processing.
+- Preserve MP3/M4A artwork during tag cleanup, write multi-value M4A fields and
+  release/remixer metadata, propagate tag-write errors instead of reporting success.
+- Serialize CLI state changes across processes; cancel and reap processor children
+  and the release poller during bot shutdown. One failed album no longer aborts the queue.
+- Validate stale library plans, destinations and tag values before applying; keep
+  canonical album tags after hygiene fixes; recompute totals and coordinate ALAC conversion.
+- Treat an unreachable downloader as busy, validate task paths and count real,
+  distinct downloaded tracks. Preserve previous partial downloads on repeated failure.
+- Retry transient Discogs failures, reject low-confidence album titles and unrelated
+  artist metadata, and preserve source years when lookup fails.
+- Refresh cached passport track names and loudness; measure only matching albums
+  for named quality queries; reject corrupt JSON state instead of silently resetting it.
+- Do not advance new-release cursors after partial API failure. Average spectral
+  power by channel to avoid phase cancellation. Gemini falls back on empty responses;
+  opinion prompts no longer claim audible damage from counters alone.
 - Remove a release year after the artist prefix before searching Discogs
   ("Rammstein - 1997 - Sehnsucht" searches for "Sehnsucht").
 - Discogs requests use X25519 key exchange to avoid handshake timeouts on network

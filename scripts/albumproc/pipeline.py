@@ -17,7 +17,7 @@ from typing import Optional
 from . import audioformat, config, covers, cue, deezer_dl, discogs, quality, replaygain, upconvert
 from .files import (
     album_audio_files, disc_dir_number, find_or_create_artist_dir, is_album_dir, move_aside,
-    normalize_permissions, remove_non_music_files, safe_rename,
+    normalize_permissions, remove_non_music_files, rename_files,
 )
 from .names import (
     TITLE_MIN_SIMILARITY, album_folder_name, album_identity, credit_name, credit_track, clean_folder_name,
@@ -116,6 +116,8 @@ def _existing_genre(album_path: Path) -> str:
 
 def _is_part_of(artist: str, discogs_artist: str) -> bool:
     """True when every artist in *artist* is also credited in *discogs_artist* (case aside)."""
+    if not artist.strip() or not discogs_artist.strip():
+        return False
     if credit_name(discogs_artist).lower() == credit_name(artist).lower():
         return True
     credited = {name.lower() for name in split_multi_value(discogs_artist)}
@@ -187,6 +189,11 @@ def resolve_album_info(candidate: AlbumCandidate) -> Optional[AlbumInfo]:
         # Same-named album by a namesake artist: "Nirvana" (1990) by the 60s band
         log.info("  ℹ️  Discogs release %r has other tracks — ignored.", found.get("title"))
         found = None
+    if found and artist and found.get("artist") and not (
+            _is_part_of(artist, found["artist"])
+            or _is_part_of(_tagged_album_artist(album_path, track_artist=True), found["artist"])):
+        log.warning("  ⚠️ Discogs returned another artist (%s) — ignored.", found["artist"])
+        found = None
     if found:
         discogs_artist = found.get("artist", "")
         download_artist = ""
@@ -216,7 +223,7 @@ def resolve_album_info(candidate: AlbumCandidate) -> Optional[AlbumInfo]:
         title = clean_folder_name(title)
         info = AlbumInfo(
             artist=artist,
-            year=extract_year_from_folder(album_path.name),
+            year=extract_year_from_folder(album_path.name) or album_tag_values(album_audio_files(album_path))[1],
             album=strip_artist_prefix(title, artist) if artist else title,
             genre=_existing_genre(album_path),
         )
@@ -239,9 +246,6 @@ def apply_cover(album_path: Path, info: AlbumInfo) -> None:
     log.info("🖼️  Fetching cover art…")
     audio_files = album_audio_files(album_path)
     existing = covers.current_cover(album_path, audio_files)
-    for f in covers.cover_like_files(album_path):
-        f.unlink()
-
     image = covers.fetch_deezer_cover(info.artist, info.album)
     if not image:
         log.info("  ℹ️  Deezer cover unavailable — using the art from the download.")
@@ -252,7 +256,12 @@ def apply_cover(album_path: Path, info: AlbumInfo) -> None:
 
     jpeg = covers.normalize_cover(image)
     (album_path / config.COVER_NAME).write_bytes(jpeg)
+    for f in covers.cover_like_files(album_path):
+        if f != album_path / config.COVER_NAME and f.parent == album_path:
+            f.unlink()
     embedded = embed_picture_in_all(audio_files, jpeg)
+    if embedded != len(audio_files):
+        raise OSError("could not embed the cover in every track")
     log.info("  🖼️  Cover.jpg written (%s), embedded into %d file(s).",
              "×".join(map(str, covers.image_size(jpeg) or ())), embedded)
 
@@ -316,6 +325,7 @@ def process_tracks(album_path: Path, info: AlbumInfo) -> None:
     release_types = discogs.album_release_types(info.release_types, len(audio_files), info.artist)
 
     position_on_disc: Counter = Counter()
+    prepared = []
     for audio_file in audio_files:
         existing = read_tags(audio_file)
         disc = discs[audio_file]
@@ -346,9 +356,8 @@ def process_tracks(album_path: Path, info: AlbumInfo) -> None:
             artist = info.artist
 
         target_dir = album_path / f"CD{disc}" if len(disc_numbers) > 1 else album_path
-        target_dir.mkdir(exist_ok=True)
-        audio_file = safe_rename(audio_file, target_dir / track_file_name(track_num, artist, title, audio_file.suffix))
-        write_tags(audio_file, TrackMetadata(
+        target = target_dir / track_file_name(track_num, artist, title, audio_file.suffix)
+        prepared.append((audio_file, target, TrackMetadata(
             artist=artist,
             title=title,
             album=info.album,
@@ -362,7 +371,14 @@ def process_tracks(album_path: Path, info: AlbumInfo) -> None:
             release_types=tuple(release_types),
             compilation=is_various_artists(info.artist),
             remixers=tuple(track_remixers(title, info.tracklist)),
-        ))
+        )))
+
+    targets = [target for _, target, _ in prepared]
+    if len(set(targets)) != len(targets):
+        raise ValueError("several tracks would have the same file name")
+    rename_files([(src, target) for src, target, _ in prepared])
+    for _, audio_file, metadata in prepared:
+        write_tags(audio_file, metadata)
         log.info("  ✅ %s", audio_file.relative_to(album_path))
 
     # Disc folders of the download that were renamed to CD<n> are empty now
@@ -395,6 +411,8 @@ def move_to_library(album_path: Path, info: AlbumInfo) -> Path:
     """
     log.info("📦 Moving to music library…")
     dest = _destination(info)
+    if not dest.resolve().is_relative_to(config.MUSIC_PATH.resolve()):
+        raise ValueError("destination escapes the library")
     if album_path.resolve() == dest.resolve():
         log.info("✅ Already in destination: %s", dest)
         return dest
@@ -404,7 +422,7 @@ def move_to_library(album_path: Path, info: AlbumInfo) -> Path:
         aside = move_aside(existing)
         log.warning("  ⚠️  Album already in the library — old version moved to %s", aside)
     shutil.move(str(album_path), str(dest))
-    normalize_permissions(dest.parent)
+    normalize_permissions(dest)
     log.info("✅ Moved to: %s", dest)
     return dest
 
@@ -447,6 +465,14 @@ def process_album(candidate: AlbumCandidate, state: RunState) -> Optional[bool]:
     """
     album_path = candidate.path
     log.info("\n🎵 Processing: %s", album_path)
+    if album_path.resolve() in {config.DOWNLOADS_PATH.resolve(), config.MUSIC_PATH.resolve()}:
+        raise ValueError("select an album folder, not the downloads or library root")
+    if album_path.is_symlink() or any(p.is_symlink() for p in album_path.rglob("*")):
+        raise ValueError("symbolic links inside an album are not supported")
+    unsupported = [f.name for f in album_audio_files(album_path)
+                   if f.suffix.lower() not in {".flac", ".mp3", ".m4a"} and not audioformat.is_lossless(f)]
+    if unsupported:
+        raise ValueError(f"unsupported audio container; use MP3 or M4A for lossy audio: {unsupported}")
 
     cue.split_album(album_path)
     files = album_audio_files(album_path)

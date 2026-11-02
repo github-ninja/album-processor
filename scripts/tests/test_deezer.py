@@ -21,6 +21,7 @@ class DeezerDownloader(TempLibraryCase):
         self.base = self.downloads / "deezer"
         for patcher in (mock.patch.object(config, "DEEZER_DOWNLOADER_DIR", self.base),
                         mock.patch.object(config, "DEEZER_DOWNLOADER_URL", "http://deezer:5000"),
+                        mock.patch.object(deezer_dl, "_track_count", return_value=None),
                         mock.patch.object(deezer_dl.time, "sleep")):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -49,6 +50,7 @@ class DeezerDownloader(TempLibraryCase):
         album = self.base / "albums" / "Arovane - Lilies"
         make_flac(album / "01 - Arovane Pulse.flac")
         make_flac(self.base / "incomplete" / "Arovane - Lilies" / "01 - Arovane Pulse.flac")  # an earlier try
+        make_flac(album / "02 - Arovane Tides.flac")
         one = "[&#39;albums/Arovane - Lilies/01 - Arovane Pulse.flac&#39;]"
         two = "[&#39;albums/Arovane - Lilies/01 - Arovane Pulse.flac&#39;, &#39;albums/Arovane - Lilies/02 - Arovane Tides.flac&#39;]"
         with mock.patch.object(deezer_dl.requests, "request",

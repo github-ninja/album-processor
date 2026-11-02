@@ -60,7 +60,7 @@ class UpconvertReport:
 def _average_spectrum(file_path: Path) -> tuple[np.ndarray, int]:
     """
     Return the mean power spectrum (linear) of several excerpts spread across
-    the track, mixed down to mono, plus the sample rate.
+    the track, averaged by channel power (no phase cancellation), plus sample rate.
     """
     window = np.hanning(_SPEC_NFFT).astype(np.float32)
     hop = _SPEC_NFFT // 2
@@ -84,13 +84,13 @@ def _average_spectrum(file_path: Path) -> tuple[np.ndarray, int]:
                 block = snd.read(seg_len, dtype="float32", always_2d=True)
             except Exception:  # noqa: BLE001 — broken header/seektable; use what we have
                 break
-            mono = block.mean(axis=1)
-            if len(mono) < _SPEC_NFFT:
+            if len(block) < _SPEC_NFFT:
                 continue
-            n = (len(mono) - _SPEC_NFFT) // hop + 1
+            n = (len(block) - _SPEC_NFFT) // hop + 1
             idx = np.arange(_SPEC_NFFT)[None, :] + hop * np.arange(n)[:, None]
-            spec = np.fft.rfft(mono[idx] * window, axis=1)
-            power += (np.abs(spec) ** 2).sum(axis=0)
+            for channel in block.T:
+                spec = np.fft.rfft(channel[idx] * window, axis=1)
+                power += (np.abs(spec) ** 2).sum(axis=0) / block.shape[1]
             frames_used += n
 
     if frames_used:

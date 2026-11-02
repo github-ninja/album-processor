@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -107,13 +108,35 @@ async def _run_processor(args: list[str], env_overrides: dict[str, str],
     """Run album_processor.py; *exclusive* runs (everything that moves files) go one at a time."""
     env = {**os.environ, **env_overrides}
 
-    def run() -> subprocess.CompletedProcess:
-        return subprocess.run([sys.executable, PROCESSOR_SCRIPT, *args], capture_output=True, text=True, env=env)
+    async def run() -> subprocess.CompletedProcess:
+        command = [sys.executable, PROCESSOR_SCRIPT, *args]
+        proc = await asyncio.create_subprocess_exec(
+            *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env=env, start_new_session=True)
+        try:
+            stdout, stderr = await proc.communicate()
+        except asyncio.CancelledError:
+            if proc.returncode is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    await asyncio.wait_for(proc.communicate(), timeout=5)
+                except asyncio.TimeoutError:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    await proc.communicate()
+            raise
+        return subprocess.CompletedProcess(command, proc.returncode,
+                                           stdout.decode(errors="replace"), stderr.decode(errors="replace"))
 
     if not exclusive:
-        return await asyncio.to_thread(run)
+        return await run()
     async with _processor_lock:
-        return await asyncio.to_thread(run)
+        return await run()
 
 
 async def _reply_with_output(message: Message, result: subprocess.CompletedProcess) -> None:
@@ -229,14 +252,17 @@ async def _ask_about_deferred(message: Message, entries: list[dict]) -> None:
 
 def _delete_album(path: Path) -> None:
     """Delete an album folder from downloads, plus its artist folder if left empty."""
-    downloads = DOWNLOADS_PATH.resolve()
-    target = path.resolve()
-    if downloads not in target.parents:
-        raise ValueError(f"путь вне папки загрузок: {path}")
-    shutil.rmtree(target)
-    parent = target.parent
-    if parent != downloads and not any(parent.iterdir()):
-        parent.rmdir()
+    from albumproc.files import processor_lock
+
+    with processor_lock():
+        downloads = DOWNLOADS_PATH.resolve()
+        target = path.resolve()
+        if downloads not in target.parents:
+            raise ValueError(f"путь вне папки загрузок: {path}")
+        shutil.rmtree(target)
+        parent = target.parent
+        if parent != downloads and not any(parent.iterdir()):
+            parent.rmdir()
 
 
 # ---------------------------------------------------------------------------
@@ -823,13 +849,20 @@ async def _on_start(app: Application) -> None:
         log.exception("Failed to set the command menu or the bot's name")
 
 
+async def _on_stop(app: Application) -> None:
+    task = app.bot_data.pop("release_poller", None)
+    if task is not None:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 def main() -> None:
     if not BOT_TOKEN:
         sys.exit("Error: BOT_TOKEN environment variable is not set.")
     if not ALLOWED_ID:
         sys.exit("Error: ALLOWED_ID environment variable is not set.")
 
-    app = Application.builder().token(BOT_TOKEN).post_init(_on_start).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(_on_start).post_stop(_on_stop).build()
     for name, _, handler in COMMANDS:
         app.add_handler(CommandHandler(name, handler))
     app.add_handler(CallbackQueryHandler(on_fix_decision, pattern=r"^fx:"))

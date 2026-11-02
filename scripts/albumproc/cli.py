@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 from . import config, deezer_dl, library, opinion, pipeline, quality, releases
+from .files import processor_lock
 
 log = logging.getLogger("albumproc")
 
@@ -43,7 +44,13 @@ def _process(paths: list[str]) -> int:
 
     log.info("📋 Found %d album(s) to process.\n", len(candidates))
     state = pipeline.RunState()
-    results = [pipeline.process_album(candidate, state) for candidate in candidates]
+    results = []
+    for candidate in candidates:
+        try:
+            results.append(pipeline.process_album(candidate, state))
+        except Exception:
+            log.exception("❌ Failed to process album: %s", candidate.path)
+            results.append(False)
     failed, deferred = results.count(False), results.count(None)
 
     if config.DEFERRED_REPORT_FILE:
@@ -136,8 +143,7 @@ def _releases(action: str) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
+def _dispatch(argv: list[str]) -> int:
     # These print a message for the bot on stdout: their log goes to stderr
     logging.basicConfig(level=logging.INFO, format="%(message)s",
                         stream=sys.stderr if argv[:1] in (["--releases"], ["--opinion"], ["--deezer"]) else sys.stdout)
@@ -156,3 +162,15 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(quality.library_report(" ".join(argv[1:]))))
         return 0
     return _process(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        if argv[:2] == ["--deezer", "search"]:
+            return _dispatch(argv)
+        with processor_lock():
+            return _dispatch(argv)
+    except Exception as exc:
+        log.error("❌ %s", exc)
+        return 1

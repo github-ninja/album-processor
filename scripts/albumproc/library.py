@@ -35,7 +35,7 @@ from mutagen.flac import FLAC
 from . import audioformat, config, covers, discogs, replaygain
 from .files import (
     album_audio_files, find_dir_case_insensitive, journal, library_album_dirs, move_aside,
-    safe_rename,
+    safe_rename, rename_files,
 )
 from .names import (
     album_folder_name, album_identity, artist_folder_name, credit_track, has_credit_markers, artists_match, clean_folder_name, clean_text,
@@ -208,6 +208,18 @@ def _plan_title(album_dir: Path, files: list[Path], check_all: bool) -> dict:
     return result
 
 
+def _flac_values(path: Path) -> dict[str, list[str]]:
+    """Current FLAC fields, or the fields retained by lossless conversion."""
+    if path.suffix.lower() == ".flac":
+        return {k.lower(): list(v) for k, v in FLAC(path).items()}
+    tags = read_tags(path)
+    mapping = {"artist": "artist", "title": "title", "album": "album", "date": "date",
+               "genre": "genre", "albumartist": "album_artist", "tracknumber": "track_number",
+               "discnumber": "disc_number"}
+    return {field: split_multi_value(tags[key]) if field in {"artist", "albumartist", "genre"} else [tags[key]]
+            for field, key in mapping.items() if tags[key]}
+
+
 def _plan_tag_fixes(album_dir: Path, files: list[Path], genres: dict[str, str],
                     artists: dict[str, str], fill_genre: Optional[str],
                     tracklist: Optional[list[dict]] = None,
@@ -220,14 +232,15 @@ def _plan_tag_fixes(album_dir: Path, files: list[Path], genres: dict[str, str],
     fixes = []
     discs = sorted({_disc_of(f, album_dir) for f in files})
     tracks_per_disc = Counter(_disc_of(f, album_dir) for f in files)
-    album_artists = {tuple(FLAC(f).get("artist") or []) for f in files if f.suffix.lower() == ".flac"}
+    current_by_file = {f: _flac_values(f) for f in files
+              if f.suffix.lower() == ".flac" or audioformat.needs_conversion(f)}
+    album_artists = {tuple(current.get("artist", [])) for current in current_by_file.values()}
 
     for f in files:
-        if f.suffix.lower() != ".flac":
+        if f not in current_by_file:
             continue
-        t = FLAC(f)
         rel = str(f.relative_to(album_dir))
-        current = {k.lower(): list(v) for k, v in t.items()}
+        current = current_by_file[f]
         wanted = {k: list(v) for k, v in current.items()}
 
         for field in _TEXT_FIELDS:
@@ -257,19 +270,18 @@ def _plan_tag_fixes(album_dir: Path, files: list[Path], genres: dict[str, str],
             if remixers:
                 wanted["remixer"] = remixers
 
-        # Totals: one convention, values from the legacy fields when needed
+        # Totals describe the actual discs/tracks, not stale source metadata.
         disc = _disc_of(f, album_dir)
-        legacy_tracks = wanted.pop("totaltracks", None)
-        legacy_discs = wanted.pop("totaldiscs", None)
+        wanted.pop("totaltracks", None)
+        wanted.pop("totaldiscs", None)
         number = (wanted.get("tracknumber") or [""])[0]
         if "/" in number:  # "3/12"
             number, _, total = number.partition("/")
             wanted["tracknumber"] = [number]
             wanted.setdefault("tracktotal", [total])
-        wanted["tracktotal"] = wanted.get("tracktotal") or legacy_tracks or [str(tracks_per_disc[disc])]
+        wanted["tracktotal"] = [str(tracks_per_disc[disc])]
         wanted["discnumber"] = [str(disc)]
-        wanted["disctotal"] = [str(len(discs))] if len(discs) > 1 else (
-            wanted.get("disctotal") or legacy_discs or ["1"])
+        wanted["disctotal"] = [str(len(discs))]
 
         for field in sorted(set(current) | set(wanted)):
             old, new = current.get(field, []), wanted.get(field, [])
@@ -403,14 +415,14 @@ def plan_library_fixes(check_all: bool = False) -> list[dict]:
 
         missing_genre = not any(read_tags(f)["genre"] for f in files)
         # Release type, compilation flag and remixers are filled in once, from Discogs
-        missing_type = not all("releasetype" in FLAC(f) for f in files if f.suffix.lower() == ".flac")
+        missing_type = any("releasetype" not in _flac_values(f) for f in files)
         found = None
         if missing_genre or missing_type or any(_credit_markers(f) for f in files):
             found = discogs.fetch_album(artist, title["new_album"])
             if found and not artists_match(artist, found.get("artist", "")):
                 found = None
         fill_genre = found.get("genre") if found and missing_genre else None
-        album_artist = "; ".join(FLAC(files[0]).get("albumartist") or [artist]) if files else artist
+        album_artist = (read_tags(files[0])["album_artist"] or artist) if files else artist
         release_types = discogs.album_release_types(found.get("release_types", []) if found else [],
                                                     len(files), album_artist) if missing_type else None
 
@@ -429,6 +441,8 @@ def plan_library_fixes(check_all: bool = False) -> list[dict]:
         for f in files:
             rel = f.relative_to(album_dir)
             expected = expected_track_filename(f, planned.get(str(rel))) or f.name
+            if audioformat.needs_conversion(f):
+                expected = str(Path(expected).with_suffix(".flac"))
             # A flat multi-disc album (disc numbers only in tags) is split into CD<n> folders
             folder = _disc_folder(f, album_dir, discs) if f.parent == album_dir else rel.parent
             target = folder / expected
@@ -534,26 +548,73 @@ def apply_library_fixes(plan: list[dict]) -> int:
             continue
 
         try:
+            root = config.MUSIC_PATH.resolve()
+            relative = album_dir.resolve().relative_to(root)
+            if len(relative.parts) != 2 or relative.parts[0].startswith((".", "$")) or album_dir.is_symlink():
+                raise ValueError("plan path is not a library album")
+            if any(p.is_symlink() for p in album_dir.rglob("*")):
+                raise ValueError("symbolic links inside an album are not supported")
+            for value in (new_artist, entry["new_folder"]):
+                if not value or Path(value).name != value or value in (".", ".."):
+                    raise ValueError("invalid destination folder in plan")
+            current_files = album_audio_files(album_dir)
+            if album_tag_values(current_files) != (entry["old_album"], entry["old_year"]):
+                raise ValueError("album changed after planning; build a new plan")
+            artist_dir = find_dir_case_insensitive(config.MUSIC_PATH, new_artist) or config.MUSIC_PATH / new_artist
+            planned_target = artist_dir / entry["new_folder"]
+            if not planned_target.resolve().is_relative_to(root):
+                raise ValueError("destination escapes the library")
+            if planned_target != album_dir and planned_target.exists():
+                raise FileExistsError(f"папка {planned_target} уже существует")
+            for rel in ([r[0] for r in entry.get("tag_fixes", [])]
+                        + [r[0] for r in entry.get("convert", [])]
+                        + [p for pair in entry.get("file_renames", []) for p in pair]):
+                if not (album_dir / rel).resolve().is_relative_to(album_dir.resolve()):
+                    raise ValueError("track path escapes album")
+            before_tags = {rel: _flac_values(album_dir / rel)
+                           for rel in {r[0] for r in entry.get("tag_fixes", [])}}
+            for rel, field, old_values, new_values in entry.get("tag_fixes", []):
+                if before_tags[rel].get(field, []) != old_values:
+                    raise ValueError(f"track changed after planning: {rel}; build a new plan")
+            pairs = [(album_dir / old, album_dir / new) for old, new in entry.get("file_renames", [])]
+            sources = {src for src, _ in pairs}
+            if len({dst for _, dst in pairs}) != len(pairs):
+                raise ValueError("duplicate track destinations in plan")
+            for src, dst in pairs:
+                if not src.is_file() or (dst.exists() and dst not in sources):
+                    raise FileExistsError(f"track rename conflicts with current files: {src} → {dst}")
             if entry.get("duplicate_of"):
+                keep = Path(entry["duplicate_of"])
+                if not keep.is_dir() or keep.resolve() == album_dir.resolve():
+                    raise ValueError("the duplicate to keep no longer exists")
                 target = move_aside(album_dir)
                 log.info("  ♊ Дубль убран → %s", target)
                 journal({**entry, "new_path": str(target)})
                 continue
 
+            journal({**entry, "status": "started"})
             if entry.get("convert"):
+                converted = {rel: str(Path(rel).with_suffix(".flac")) for rel, _ in entry["convert"]}
+                for rel, new_rel in converted.items():
+                    if rel != new_rel and (album_dir / new_rel).exists():
+                        raise FileExistsError(f"conversion destination already exists: {new_rel}")
                 for rel, fmt in entry["convert"]:
                     audioformat.convert_to_library_format(album_dir / rel)
+                pairs = [(album_dir / converted.get(str(src.relative_to(album_dir)), str(src.relative_to(album_dir))), dst)
+                         for src, dst in pairs]
                 log.info("  🎚️  Сконвертировано в 16/44.1: %d файл(ов)", len(entry["convert"]))
+            else:
+                converted = {}
 
             files = album_audio_files(album_dir)
+            if entry.get("tag_fixes"):
+                changed = _apply_tag_fixes(album_dir, [[converted.get(rel, rel), field, old, new]
+                                                       for rel, field, old, new in entry["tag_fixes"]])
+                log.info("  🏷️  Исправлено полей: %d в %d файл(ах)", len(entry["tag_fixes"]), changed)
             if (entry["new_album"], entry["new_year"]) != (entry["old_album"], entry["old_year"]):
                 for f in files:
                     update_album_tags(f, entry["new_album"], entry["new_year"])
                 log.info("  🏷️  Теги: album=%r, date=%r", entry["new_album"], entry["new_year"])
-
-            if entry.get("tag_fixes"):
-                changed = _apply_tag_fixes(album_dir, entry["tag_fixes"])
-                log.info("  🏷️  Исправлено полей: %d в %d файл(ах)", len(entry["tag_fixes"]), changed)
 
             if entry.get("replaygain"):
                 replaygain.tag_album(album_audio_files(album_dir))
@@ -563,15 +624,8 @@ def apply_library_fixes(plan: list[dict]) -> int:
                 if result:
                     log.info("  🖼️  Обложка: %s", result)
 
-            renamed = 0
-            for old_rel, new_rel in entry.get("file_renames", []):
-                src, dst = album_dir / old_rel, album_dir / new_rel
-                if not src.exists() or dst.exists():
-                    log.warning("  ⚠️  Файл пропущен: %s", old_rel)
-                    continue
-                dst.parent.mkdir(exist_ok=True)
-                src.rename(dst)
-                renamed += 1
+            rename_files(pairs)
+            renamed = sum(src != dst for src, dst in pairs)
             if renamed:
                 log.info("  📝 Файлов переименовано: %d", renamed)
             # Disc folders made by the renames (a flat album split into CD1, CD2…) get their cover copy
@@ -599,6 +653,7 @@ def apply_library_fixes(plan: list[dict]) -> int:
                     old_parent.rmdir()
         except Exception as exc:  # noqa: BLE001
             log.error("  ❌ Ошибка: %s", exc)
+            journal({**entry, "status": "failed", "error": str(exc)})
             failed += 1
             continue
 

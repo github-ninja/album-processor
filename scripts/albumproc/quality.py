@@ -20,6 +20,7 @@ import math
 import multiprocessing
 import os
 import time
+from collections import defaultdict, deque
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Optional
@@ -163,7 +164,7 @@ def summary(passport: dict) -> str:
     if passport.get("lufs") is not None:
         parts.append(f"{passport['lufs']:.1f} LUFS")
     parts.append(f"true peak {_db(peak)}")
-    parts.append(f"полок: {clips} ({clips_per_minute(passport):.0f}/мин)" if clips else "клиппинга нет")
+    parts.append(f"полок: {clips} ({clips_per_minute(passport):.0f}/мин)" if clips else "плоских вершин не найдено")
     return " · ".join(parts)
 
 
@@ -189,7 +190,7 @@ def describe(passport: dict) -> list[str]:
 def _load() -> dict[str, dict]:
     try:
         return json.loads(store_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {}
 
 
@@ -216,12 +217,34 @@ def passport(album_dir: Path, store: Optional[dict] = None) -> dict:
     """
     own_store = store is None
     store = _load() if own_store else store
-    key = _audio_key(album_dir)
+    files = [f for f in album_audio_files(album_dir) if f.suffix.lower() == ".flac"]
+    identities = {path: audio_id(path) for path in files}
+    key = sorted(identities.values())
     found = next((p for p in store.values() if p.get("audio") == key), None)
     if found is None:
         found = {**measure_album(album_dir), "audio": key}
+    # Cached measurements survive renames, but names/order and loudness tags do not.
+    by_audio = defaultdict(deque)
+    for track in found["tracks"]:
+        by_audio[track["id"]].append(track)
+    tracks = []
+    for path in files:
+        if not by_audio[identities[path]]:
+            continue
+        track = dict(by_audio[identities[path]].popleft())
+        track["file"] = str(path.relative_to(album_dir))
+        tags = FLAC(path)
+        gain = (tags.get("replaygain_track_gain") or [""])[0].split()
+        peak = (tags.get("replaygain_track_peak") or [""])[0]
+        track["lufs"] = round(-18 - float(gain[0]), 1) if gain else None
+        track["true_peak"] = float(peak) if peak else None
+        tracks.append(track)
+    found = {**found, "tracks": tracks}
+    gain = (FLAC(files[0]).get("replaygain_album_gain") or [""])[0].split() if files else []
+    found["lufs"] = round(-18 - float(gain[0]), 1) if gain else None
     if config.MUSIC_PATH in album_dir.parents:
-        store = {path: p for path, p in store.items() if p.get("audio") != key}
+        store = {path: p for path, p in store.items()
+                 if p.get("audio") != key or (config.MUSIC_PATH / path).is_dir()}
         store[_rel(album_dir)] = found
         if own_store:
             _save(store)
@@ -230,7 +253,8 @@ def passport(album_dir: Path, store: Optional[dict] = None) -> dict:
 
 def remember(album_dir: Path, measured: dict) -> None:
     """Store a passport measured in downloads under the album's library path."""
-    store = {path: p for path, p in _load().items() if p.get("audio") != measured.get("audio")}
+    store = {path: p for path, p in _load().items()
+             if p.get("audio") != measured.get("audio") or (config.MUSIC_PATH / path).is_dir()}
     store[_rel(album_dir)] = measured
     _save(store)
 
@@ -248,6 +272,14 @@ def library_report(query: str = "", limit: int = 30) -> list[str]:
     old = _load()
     store: dict[str, dict] = {}
     albums = library_album_dirs()
+    matching = []
+    if query:
+        matching = [str(d.relative_to(config.MUSIC_PATH)) for d in albums
+                    if query.casefold() in str(d.relative_to(config.MUSIC_PATH)).casefold()]
+        if not matching:
+            return [f"Не нашёл альбомов по запросу «{query}»."]
+        albums = [d for d in albums if str(d.relative_to(config.MUSIC_PATH)) in matching[:5]]
+        store = {path: p for path, p in old.items() if (config.MUSIC_PATH / path).is_dir()}
     missing = 0
     for album_dir in albums:
         rel = _rel(album_dir)
@@ -258,9 +290,6 @@ def library_report(query: str = "", limit: int = 30) -> list[str]:
     _save(store)
 
     if query:
-        matching = [rel for rel in sorted(store) if query.casefold() in rel.casefold()]
-        if not matching:
-            return [f"Не нашёл альбомов по запросу «{query}»."]
         lines = []
         for rel in matching[:5]:
             p = store[rel]

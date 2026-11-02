@@ -55,7 +55,7 @@ def state_path() -> Path:
 def load_state() -> dict:
     try:
         state = json.loads(state_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
         state = {}
     return {"schedule": None, "last_check": None, "artists": {}, "notified": [], **state}
 
@@ -192,6 +192,7 @@ def check(today: Optional[datetime.date] = None) -> tuple[list[dict], dict]:
     notified = set(state["notified"])
     artists = library_artists()
     news = []
+    failed = False
     for name, owned in sorted(artists.items()):
         try:
             # Not found, or found but not verified yet: look again (new albums may appear on Deezer)
@@ -204,10 +205,12 @@ def check(today: Optional[datetime.date] = None) -> tuple[list[dict], dict]:
                                     artist["genres"]):
                 news.append({**album, "artist": name})
         except Exception as exc:  # noqa: BLE001 — one artist's failure must not end the check
+            failed = True
             log.warning("⚠️  %s: %s", name, exc)
     state["artists"] = {name: state["artists"].get(name) for name in artists}
     state["notified"] = sorted(notified | {a["id"] for a in news})
-    state["last_check"] = today.isoformat()
+    if not failed:
+        state["last_check"] = today.isoformat()
     save_state(state)
     return news, state
 

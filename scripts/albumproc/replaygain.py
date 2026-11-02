@@ -59,7 +59,7 @@ def measure(path: Path) -> Measurement:
                     return
                 if frame.metadata:
                     blocks.append(float(frame.metadata["lavfi.r128.M"]))
-                    peak = float(frame.metadata["lavfi.r128.true_peak"])
+                    peak = max(peak, float(frame.metadata["lavfi.r128.true_peak"]))
 
         for frame in container.decode(stream):
             graph.push(frame)

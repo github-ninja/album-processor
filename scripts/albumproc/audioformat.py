@@ -25,6 +25,7 @@ from mutagen.mp4 import MP4
 
 from . import config
 from .tags import get_embedded_picture, read_tags
+from .names import split_multi_value
 
 log = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ def _copy_metadata(src: Path, dst: Path) -> None:
                            ("albumartist", "album_artist"), ("tracknumber", "track_number"),
                            ("discnumber", "disc_number"), ("genre", "genre")):
             if tags[field]:
-                new[key] = tags[field].split("; ")
+                new[key] = split_multi_value(tags[field]) if key in {"artist", "albumartist", "genre"} else tags[field]
         image = get_embedded_picture(src)
         if image:
             picture = Picture()

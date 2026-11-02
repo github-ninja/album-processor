@@ -23,6 +23,7 @@ _API = "https://api.discogs.com"
 _SEARCH_URL = f"{_API}/database/search"
 _TIMEOUT = 10  # seconds
 _RETRIES = 3
+_ALBUM_MIN_SIMILARITY = 0.8
 _HEADERS = {"User-Agent": "AlbumProcessor/4.0"}
 if config.DISCOGS_TOKEN:
     _HEADERS["Authorization"] = f"Discogs token={config.DISCOGS_TOKEN}"
@@ -54,15 +55,24 @@ _VERSION_GROUP_RE = re.compile(
 def api_get(url: str, **kwargs) -> Optional[dict]:
     """GET a Discogs API URL; waits and retries when rate-limited."""
     for attempt in range(_RETRIES + 1):
-        resp = _SESSION.get(url, headers=_HEADERS, timeout=_TIMEOUT, **kwargs)
-        if resp.status_code != 429 or attempt == _RETRIES:
+        try:
+            resp = _SESSION.get(url, headers=_HEADERS, timeout=_TIMEOUT, **kwargs)
+        except (requests.Timeout, requests.ConnectionError):
+            if attempt == _RETRIES:
+                raise
+            time.sleep(2 ** attempt)
+            continue
+        if resp.status_code not in {429, 500, 502, 503, 504} or attempt == _RETRIES:
             # Slow down before the per-minute quota runs out
             remaining = resp.headers.get("X-Discogs-Ratelimit-Remaining", "")
             if remaining.isdigit() and int(remaining) < 3:
                 time.sleep(10)
             break
-        delay = int(resp.headers.get("Retry-After") or 0) or 30
-        log.info("  ⏳ Discogs rate limit — waiting %d s…", delay)
+        retry_after = resp.headers.get("Retry-After", "")
+        delay = (min(int(retry_after), 60) if retry_after.isdigit() else 0) or (
+            30 if resp.status_code == 429 else 2 ** attempt)
+        log.info("  ⏳ Discogs HTTP %s — retrying in %d s…", resp.status_code, delay)
+        resp.close()
         time.sleep(delay)
     resp.raise_for_status()
     return resp.json()
@@ -112,12 +122,15 @@ def _pick_result(results: list[dict], album_title: str) -> Optional[dict]:
         result_title = result.get("title", "")
         if " - " in result_title:
             result_title = result_title.split(" - ", 1)[1]
-        score = (title_similarity(album_title, result_title)
+        similarity = title_similarity(album_title, result_title)
+        if similarity < _ALBUM_MIN_SIMILARITY:
+            continue
+        score = (similarity
                  + (0.01 if result.get("master_id") else 0)
                  - (0.02 if "Single" in (result.get("format") or []) else 0))
         if score > best_score:
             best, best_score = result, score
-    return best if best is not None and best_score >= TITLE_MIN_SIMILARITY else None
+    return best
 
 
 def fetch_album(artist: Optional[str], raw_title: str) -> Optional[dict]:

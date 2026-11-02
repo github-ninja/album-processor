@@ -6,6 +6,8 @@ import os
 import re
 import shutil
 import time
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +18,23 @@ log = logging.getLogger(__name__)
 
 # One folder per run for everything moved aside, not one per second
 _RUN_STAMP = time.strftime("%Y%m%d-%H%M%S")
+
+
+@contextmanager
+def processor_lock():
+    """One CLI writer per library, including commands started outside Telegram."""
+    import fcntl
+
+    config.state_dir().mkdir(parents=True, exist_ok=True)
+    with (config.state_dir() / "processor.lock").open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("Обработчик уже работает с этой медиатекой; дождитесь завершения.") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def get_audio_files(directory: Path) -> list[Path]:
@@ -30,7 +49,7 @@ def album_audio_files(album_dir: Path) -> list[Path]:
     """Audio files of an album, including disc sub-folders (CD1, CD2…)."""
     files = get_audio_files(album_dir)
     for sub in sorted(album_dir.iterdir()):
-        if sub.is_dir() and not sub.name.startswith("."):
+        if sub.is_dir() and not sub.is_symlink() and disc_dir_number(sub) is not None:
             files.extend(get_audio_files(sub))
     return files
 
@@ -62,6 +81,8 @@ def library_album_dirs() -> list[Path]:
     All "<artist>/<album>" folders in the library that contain audio; hidden
     and system folders ("$RECYCLE.BIN" of a Windows share) are not artists.
     """
+    if not config.MUSIC_PATH.is_dir():
+        return []
     return sorted(
         album
         for artist_dir in config.MUSIC_PATH.iterdir()
@@ -75,12 +96,44 @@ def safe_rename(src: Path, dst: Path) -> Path:
     """Rename *src* → *dst*, falling back to copy+delete on PermissionError."""
     if src == dst:
         return src
+    if dst.exists() or dst.is_symlink():
+        raise FileExistsError(f"destination already exists: {dst}")
     try:
         src.rename(dst)
     except PermissionError:
         shutil.copy2(src, dst)
         src.unlink()
     return dst
+
+
+def rename_files(pairs: list[tuple[Path, Path]]) -> None:
+    """Rename tracks without overwriting, including swaps; roll back failed moves."""
+    pairs = [(src, dst) for src, dst in pairs if src != dst]
+    sources = {src for src, _ in pairs}
+    targets = [dst for _, dst in pairs]
+    if len(sources) != len(pairs) or len(set(targets)) != len(targets):
+        raise ValueError("duplicate source or destination in track renames")
+    for src, dst in pairs:
+        if not src.is_file() or src.is_symlink():
+            raise ValueError(f"not a regular track: {src}")
+        if (dst.exists() or dst.is_symlink()) and dst not in sources:
+            raise FileExistsError(f"destination already exists: {dst}")
+    staged, published = [], []
+    try:
+        for src, dst in pairs:
+            tmp = src.with_name(f".rename-{uuid.uuid4().hex}{src.suffix}")
+            safe_rename(src, tmp)
+            staged.append((src, tmp, dst))
+        for src, tmp, dst in staged:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            safe_rename(tmp, dst)
+            published.append((src, tmp, dst))
+    except Exception:
+        for src, tmp, dst in reversed(published):
+            safe_rename(dst, tmp)
+        for src, tmp, dst in reversed(staged):
+            safe_rename(tmp, src)
+        raise
 
 
 def find_dir_case_insensitive(parent: Path, name: str) -> Optional[Path]:
@@ -112,6 +165,13 @@ def remove_non_music_files(album_dir: Path) -> None:
     Delete everything in *album_dir* except audio files and the cover; disc
     sub-folders (CD1, CD2…) are cleaned the same way, other folders removed.
     """
+    # An unrecognised folder may contain a second album: never discard its audio.
+    for item in album_dir.iterdir():
+        if item.is_symlink():
+            raise ValueError(f"symbolic link in album: {item}")
+        if item.is_dir() and disc_dir_number(item) is None and any(
+                f.is_file() and f.suffix.lower() in config.AUDIO_EXTENSIONS for f in item.rglob("*")):
+            raise ValueError(f"audio in an unsupported subfolder: {item}")
     for item in list(album_dir.iterdir()):
         if item.is_file():
             if item.suffix.lower() in config.AUDIO_EXTENSIONS or item.name == config.COVER_NAME:
@@ -131,6 +191,8 @@ def move_aside(path: Path) -> Path:
     deleting it, so an overwritten album can still be recovered.
     """
     target = config.state_dir() / "replaced" / _RUN_STAMP / path.relative_to(config.MUSIC_PATH)
+    if target.exists():
+        target = target.with_name(f"{target.name}-{uuid.uuid4().hex[:12]}")
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(path), str(target))
     return target

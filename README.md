@@ -25,6 +25,8 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
 ## Features
 
 **Import**
+- Lossy audio is accepted as MP3 or AAC in M4A; raw AAC is rejected before editing
+  files because its tags cannot follow the library conventions. It is never transcoded.
 - Finds new albums in the downloads folder: `Album/`, `Artist/Album/`, multi-disc
   albums in `CD1/`, `CD2/`… sub-folders or flat with disc tags.
 - Splits a whole-album image (one FLAC/APE/WAV/ALAC file + CUE sheet) into tracks,
@@ -78,6 +80,10 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   never upscaled; a small cover is upgraded only when Deezer has the same image larger.
 
 **Mastering passport — `/quality`**
+- A named query measures only the matching albums. Cached measurements follow
+  renamed tracks and refresh loudness tags without remeasuring the audio.
+- Flat tops are a warning sign, not proof of audible clipping; absence of flat tops
+  does not prove absence of distortion. Anton's opinions preserve this distinction.
 - Every album is measured once: DR (the TT DR Meter method of
   dr.loudness-war.info), flat tops left by hard clipping, loudness and true peak.
 - A grade per album: 🟢 open, 🟡 dense or traces of clipping, 🔴 crushed master —
@@ -129,6 +135,16 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
 - `/fixlibrary all` also re-checks every album title against Discogs.
 
 **Safety**
+- CLI commands that change library state share a per-library process lock, including
+  manual runs. A broken album does not abort the rest of the import queue.
+- Track renames reject collisions and handle swaps without overwriting audio;
+  failed rename batches roll back. CUE splitting rejects duplicate tracks and
+  leaves the source image intact if writing or tagging fails.
+- Library plans reject stale metadata, missing tracks, path escapes and existing
+  destination folders before applying changes. Lossless conversion and renaming
+  are handled together; totals reflect the actual tracks and discs.
+- An unreachable downloader is treated as potentially busy. Download completion
+  is checked against distinct files actually present, not only the task's file list.
 - One user only: the bot ignores everyone but `ALLOWED_ID`.
 - Nothing in the library is deleted: replaced albums and covers are moved to
   `music/.album_processor/replaced/`, every change is journaled with its old values.
