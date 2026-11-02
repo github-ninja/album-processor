@@ -37,6 +37,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   downloading); partly available albums are moved to `deezer/incomplete/`.
 
 ### Fixed
+- Remove a release year after the artist prefix before searching Discogs
+  ("Rammstein - 1997 - Sehnsucht" searches for "Sehnsucht").
 - Discogs requests use X25519 key exchange to avoid handshake timeouts on network
   paths incompatible with hybrid post-quantum TLS, retaining TLS 1.3 and certificate checks.
 - Suppress HTTP client INFO logs in the bot, including routine Telegram polling

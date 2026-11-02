@@ -136,7 +136,7 @@ def fetch_album(artist: Optional[str], raw_title: str) -> Optional[dict]:
     cleaned = clean_folder_name(raw_title)
     # "Artist - Title" folder names would otherwise search for "Artist Artist - Title"
     if artist:
-        cleaned = strip_artist_prefix(cleaned, artist)
+        cleaned = clean_folder_name(strip_artist_prefix(cleaned, artist))
 
     searches = []
     if artist:

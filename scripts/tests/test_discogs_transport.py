@@ -6,6 +6,11 @@ from albumproc import discogs
 
 
 class DiscogsTransport(unittest.TestCase):
+    def test_year_after_artist_prefix_is_removed_before_search(self):
+        with mock.patch.object(discogs, "search", return_value=[]) as search:
+            discogs.fetch_album("Rammstein", "Rammstein - 1997 - Sehnsucht (Anniversary Edition - Remastered, 2023) (24bit-44.1kHz)")
+        self.assertEqual(search.call_args_list[0].kwargs["release_title"], "Sehnsucht")
+
     def test_custom_context_is_scoped_to_discogs_and_verifies_certificates(self):
         adapter = discogs._SESSION.get_adapter("https://api.discogs.com/releases/1")
         self.assertIsInstance(adapter, discogs._DiscogsAdapter)

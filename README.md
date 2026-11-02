@@ -38,6 +38,7 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
 - Removes non-music files (logs, cues, scans, playlists) and empty folders.
 
 **Metadata from Discogs**
+- Folder prefixes such as `Artist - YYYY - Album` are removed before searching.
 - Album title from the Discogs *master* release, year of the *original* release,
   genres from Discogs styles.
 - Artist names spelled as the Discogs artist entity ("VIMES" → "Vimes"),
