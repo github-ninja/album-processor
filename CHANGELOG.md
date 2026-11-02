@@ -6,6 +6,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-11-03
+
 ### Changed — import architecture
 - Prepare imports in private library-side workspaces, retain original downloads until
   publication, restore replaced albums on publication failure and recover interrupted
@@ -38,8 +40,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   copy from `deezer/incomplete/`.
 
 ### Added — not found in Discogs
-- The import report ends with the albums Discogs did not know (filed without year and
-  genre), so a misspelt or transliterated artist is noticed at once.
+- The import report identifies albums without a confirmed Discogs match, preserving
+  available source years and genres, so misspelt or transliterated artists are noticed.
 
 ### Added — Deezer
 - `/deezer <query>`: search Deezer, download an album through deezer-downloader and
@@ -114,4 +116,6 @@ First public release.
 - `/fixlibrary`: plan → review → apply for names, tags, covers, format, ReplayGain,
   release types and duplicates; journal and moved-aside copies for every change.
 
+[Unreleased]: https://github.com/github-ninja/album-processor/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/github-ninja/album-processor/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/github-ninja/album-processor/releases/tag/v1.0.0
