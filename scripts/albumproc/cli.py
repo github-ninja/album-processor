@@ -26,7 +26,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import config, deezer_dl, library, opinion, pipeline, quality, releases
+from . import config, deezer_dl, jobs, library, opinion, pipeline, quality, releases
 from .files import processor_lock
 
 log = logging.getLogger("albumproc")
@@ -38,6 +38,8 @@ def _process(paths: list[str]) -> int:
     else:
         log.info("🔍 Scanning for new albums in: %s", config.DOWNLOADS_PATH)
         candidates = pipeline.find_new_albums()
+        known = {c.path.resolve() for c in candidates}
+        candidates.extend(pipeline.candidate_from_path(p) for p in jobs.recoverable_sources() if p.resolve() not in known)
     if not candidates:
         log.info("ℹ️  No new albums found.")
         return 0
@@ -54,7 +56,10 @@ def _process(paths: list[str]) -> int:
     failed, deferred = results.count(False), results.count(None)
 
     if config.DEFERRED_REPORT_FILE:
-        Path(config.DEFERRED_REPORT_FILE).write_text(json.dumps(state.deferred + state.processed, ensure_ascii=False),
+        summary = {'kind': 'result', 'processed': len(state.processed), 'failed': failed,
+                   'waiting': deferred, 'unmatched': state.not_found, 'flagged': state.flagged,
+                   'lookups': state.lookups}
+        Path(config.DEFERRED_REPORT_FILE).write_text(json.dumps(state.deferred + state.processed + [summary], ensure_ascii=False),
                                                      encoding="utf-8")
     if state.not_found:
         # At the end too: a misspelt artist is easy to miss in the middle of the log

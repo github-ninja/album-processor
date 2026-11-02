@@ -24,8 +24,7 @@ from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4
 
 from . import config
-from .tags import get_embedded_picture, read_tags
-from .names import split_multi_value
+from .tags import flac_values, get_embedded_picture
 
 log = logging.getLogger(__name__)
 
@@ -95,12 +94,8 @@ def _copy_metadata(src: Path, dst: Path) -> None:
             new.add_picture(picture)
     else:
         # Only the fields the pipeline reads; they are all rewritten from Discogs later
-        tags = read_tags(src)
-        for key, field in (("artist", "artist"), ("title", "title"), ("album", "album"), ("date", "date"),
-                           ("albumartist", "album_artist"), ("tracknumber", "track_number"),
-                           ("discnumber", "disc_number"), ("genre", "genre")):
-            if tags[field]:
-                new[key] = split_multi_value(tags[field]) if key in {"artist", "albumartist", "genre"} else tags[field]
+        for key, values in flac_values(src).items():
+            new[key] = values
         image = get_embedded_picture(src)
         if image:
             picture = Picture()

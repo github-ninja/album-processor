@@ -24,6 +24,7 @@ Commands:
 
 import asyncio
 import html
+import hashlib
 import json
 import logging
 import os
@@ -219,9 +220,17 @@ async def _edit_text(query, text: str) -> None:
         await query.edit_message_text(text, parse_mode="HTML")
 
 
+def _decision_key(entry: dict) -> str:
+    identity = [entry.get('kind', 'upconvert'), entry['path'], entry.get('source_manifest')]
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
+
+
 async def _ask_about_deferred(message: Message, entries: list[dict]) -> None:
     for entry in entries:
-        key = uuid.uuid4().hex[:12]
+        for old_key, old in list(_pending.items()):
+            if old['path'] == entry['path']:
+                _pending.pop(old_key)
+        key = _decision_key(entry)
         _pending[key] = entry
         if entry.get("kind") == "replace":
             existing = entry["existing"].replace("/", " — ", 1)
@@ -255,11 +264,13 @@ def _delete_album(path: Path) -> None:
     from albumproc.files import processor_lock
 
     with processor_lock():
+        from albumproc import jobs
         downloads = DOWNLOADS_PATH.resolve()
         target = path.resolve()
         if downloads not in target.parents:
             raise ValueError(f"путь вне папки загрузок: {path}")
         shutil.rmtree(target)
+        jobs.discard(jobs.open_job(target), 'deleted')
         parent = target.parent
         if parent != downloads and not any(parent.iterdir()):
             parent.rmdir()
@@ -306,8 +317,23 @@ async def _process(message: Message, args: list[str], env: dict[str, str]) -> No
         except (OSError, ValueError):
             entries = []
 
-    await _reply_with_output(message, result)
-    await _ask_about_deferred(message, [e for e in entries if e.get("kind") != "processed"])
+    summary = next((e for e in entries if e.get('kind') == 'result'), None)
+    if summary is None:
+        await _reply_with_output(message, result)
+    else:
+        text = (f"Обработано: {summary['processed']}; ждут решения: {summary['waiting']}; "
+                f"ошибок: {summary['failed']}.")
+        for status, label in [('unmatched', 'Discogs: не найдено'),
+                              ('rejected', 'Discogs: совпадение отвергнуто'),
+                              ('unavailable', 'Discogs недоступен')]:
+            albums = [f"{item['artist']} — {item['album']}" for item in summary.get('lookups', [])
+                      if item['status'] == status]
+            if albums:
+                text += '\n' + label + ': ' + ', '.join(albums)
+        await message.reply_text(text[:4000])
+        if result.returncode:
+            await _reply_with_output(message, result)
+    await _ask_about_deferred(message, [e for e in entries if e.get("kind") not in {"processed", "result"}])
     await _offer_opinions(message, [e for e in entries if e.get("kind") == "processed"])
     log.info("Processor finished with return code %d", result.returncode)
 
@@ -565,6 +591,16 @@ async def on_upconvert_decision(update: Update, context: ContextTypes.DEFAULT_TY
 
     path = Path(entry["path"])
     name = html.escape(_display_path(path))
+    if entry.get('source_manifest') is not None:
+        from albumproc import jobs
+        current = jobs.open_job(path)
+        if (current.get('status') != 'waiting' or current.get('deferred') != entry
+                or jobs.manifest(path) != entry['source_manifest']):
+            _pending.pop(key, None)
+            await query.answer()
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text('⌛ Загрузка или запрос изменились — запустите /newalbum ещё раз.')
+            return
 
     if action == "del":
         await query.answer()
@@ -606,6 +642,11 @@ async def on_upconvert_decision(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if action == "keep":
+        from albumproc import jobs
+        from albumproc.files import processor_lock
+        with processor_lock():
+            job = jobs.open_job(path)
+            jobs.discard(job, 'kept')
         await _edit_text(query, f"⏭ Оставлен в загрузках: {name}")
 
     elif action == "delyes":
@@ -839,6 +880,10 @@ COMMANDS = [
 
 async def _on_start(app: Application) -> None:
     """Set the "/" menu — in the owner's chat only, strangers get no menu — and start the release poller."""
+    from albumproc import jobs
+    for entry in jobs.pending():
+        if Path(entry['path']).is_dir():
+            _pending[_decision_key(entry)] = entry
     app.bot_data["release_poller"] = asyncio.create_task(_scheduled_releases(app))
     try:
         await app.bot.set_my_commands([BotCommand(name, description) for name, description, _ in COMMANDS],

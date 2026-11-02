@@ -133,7 +133,7 @@ def _pick_result(results: list[dict], album_title: str) -> Optional[dict]:
     return best
 
 
-def fetch_album(artist: Optional[str], raw_title: str) -> Optional[dict]:
+def fetch_album(artist: Optional[str], raw_title: str, *, diagnostics: Optional[dict] = None) -> Optional[dict]:
     """
     Look up an album by *artist* and a (possibly messy) folder name or title.
 
@@ -146,6 +146,8 @@ def fetch_album(artist: Optional[str], raw_title: str) -> Optional[dict]:
     "release_types", "tracklist"} or None when
     Discogs is unreachable or has no confident match.
     """
+    if diagnostics is not None:
+        diagnostics['status'] = 'unmatched'
     cleaned = clean_folder_name(raw_title)
     # "Artist - Title" folder names would otherwise search for "Artist Artist - Title"
     if artist:
@@ -201,6 +203,8 @@ def fetch_album(artist: Optional[str], raw_title: str) -> Optional[dict]:
                     years.append(int(master["year"]))
                 year = min(years) if years else year
 
+        if diagnostics is not None:
+            diagnostics['status'] = 'matched'
         return {
             "release_id": release.get("id"),
             "master_id": master_id,
@@ -225,7 +229,15 @@ def fetch_album(artist: Optional[str], raw_title: str) -> Optional[dict]:
         log.warning("⚠️  Discogs HTTP error: %s", exc)
     except Exception as exc:  # noqa: BLE001
         log.warning("⚠️  Discogs error: %s", exc)
+    if diagnostics is not None:
+        diagnostics['status'] = 'unavailable'
     return None
+
+
+def lookup_album(artist: Optional[str], title: str) -> tuple[Optional[dict], str]:
+    diagnostics = {}
+    album = fetch_album(artist, title, diagnostics=diagnostics)
+    return album, diagnostics.get('status', 'matched' if album else 'unmatched')
 
 
 def edition_history(release_id: int, master_id: Optional[int]) -> dict:

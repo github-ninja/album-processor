@@ -131,6 +131,18 @@ def album_tag_values(files: list[Path]) -> tuple[str, str]:
     return tags["album"], tags["date"][:4]
 
 
+def flac_values(path: Path) -> dict[str, list[str]]:
+    """Fields retained by conversion, shared by conversion and maintenance planning."""
+    if path.suffix.lower() == '.flac':
+        return {k.lower(): list(v) for k, v in FLAC(path).items()}
+    values = read_tags(path)
+    mapping = {'artist': 'artist', 'title': 'title', 'album': 'album', 'date': 'date',
+               'genre': 'genre', 'albumartist': 'album_artist', 'tracknumber': 'track_number',
+               'discnumber': 'disc_number'}
+    return {field: split_multi_value(values[key]) if field in MULTI_VALUE_FIELDS else [values[key]]
+            for field, key in mapping.items() if values[key]}
+
+
 # ---------------------------------------------------------------------------
 # Writing
 # ---------------------------------------------------------------------------

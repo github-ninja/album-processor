@@ -135,6 +135,13 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
 - `/fixlibrary all` also re-checks every album title against Discogs.
 
 **Safety**
+- Imports run on a private copy in `music/.album_processor/work/`. Downloads stay
+  intact until the prepared album is published by a directory rename. Allow extra
+  disk space for the source and working copy. A failed publication restores the
+  previous library album; a failure before publication keeps the download.
+- Import records and pending decisions survive bot restarts. `/newalbum` retries
+  failed preparation from the original download and finishes cleanup after an
+  interrupted publication. Buttons reject downloads changed since the question.
 - CLI commands that change library state share a per-library process lock, including
   manual runs. A broken album does not abort the rest of the import queue.
 - Track renames reject collisions and handle swaps without overwriting audio;
@@ -155,6 +162,8 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
 
 For every album found in the downloads folder:
 
+The following steps run on a working copy, not on the download itself.
+
 1. **Split** a whole-album image by its CUE sheet; **convert** ALAC, APE, WAV and hi-res FLAC to FLAC 16/44.1.
 2. **Upconvert check** — spectral cutoff of every track; a suspected MP3→FLAC
    is held back for your decision (`UPCONVERT_ACTION`).
@@ -167,6 +176,8 @@ For every album found in the downloads folder:
 8. **Move** to `music/<Album artist>/<YYYY - Album>/`. If the album is already in
    the library, the bot first shows both passports and asks (`REPLACE_ACTION`);
    a replaced copy is moved aside, not deleted.
+9. **Finish** — save the result and remove the unchanged original download.
+   If it has changed meanwhile, retain it and report an error for review.
 
 The bot only starts `album_processor.py` and talks to you; all the work is
 done by the `albumproc` package, which can also be used from the command line.
@@ -281,6 +292,17 @@ python album_processor.py --releases [check|status|daily|weekly|monthly|stop]   
 - `music/.album_processor/replaced/<run>/` — albums and covers that were replaced.
 - `music/.album_processor/quality.json` — mastering passports (rebuilt by `/quality` if lost).
 - `music/.album_processor/releases.json` — new-album schedule, Deezer artist matches, albums already reported.
+- `music/.album_processor/jobs/` — durable import records, decisions and matched Discogs
+  release/master IDs. `/opinion` reuses this identification for matching audio;
+  a search match still does not prove the exact source edition.
+- `music/.album_processor/work/` — private preparation copies, including albums awaiting
+  a decision. Keep/delete buttons clear the corresponding copy. Failed preparation
+  is rebuilt on retry; individual conversion steps are not resumed.
+
+Mastering passports carry an analysis version: changing the algorithm invalidates
+older measurements when requested. Import results are passed to the bot as JSON,
+with separate Discogs states for no match, rejected match and service failure.
+Library maintenance still applies changes in place and needs a backup before bulk edits.
 
 ## Development
 

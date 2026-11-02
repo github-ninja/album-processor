@@ -10,11 +10,11 @@ import logging
 import re
 import shutil
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from . import audioformat, config, covers, cue, deezer_dl, discogs, quality, replaygain, upconvert
+from . import audioformat, config, covers, cue, deezer_dl, discogs, jobs, quality, replaygain, upconvert
 from .files import (
     album_audio_files, disc_dir_number, find_or_create_artist_dir, is_album_dir, move_aside,
     normalize_permissions, remove_non_music_files, rename_files,
@@ -47,6 +47,9 @@ class AlbumInfo:
     download_artist: str = ""  # the download's shorter credit when Discogs lists more artists
     release_types: list[str] = field(default_factory=list)  # RELEASETYPE from Discogs
     from_discogs: bool = False  # False: title and artist are the download's own, no year or genre
+    release_id: Optional[int] = None
+    master_id: Optional[int] = None
+    lookup_status: str = 'unmatched'
 
 
 @dataclass
@@ -56,6 +59,7 @@ class RunState:
     deferred: list[dict] = field(default_factory=list)  # left in downloads for the bot to ask about
     processed: list[dict] = field(default_factory=list)  # moved to the library, for the bot's opinion buttons
     not_found: list[str] = field(default_factory=list)  # filed without Discogs data, for the summary
+    lookups: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -184,16 +188,18 @@ def resolve_album_info(candidate: AlbumCandidate) -> Optional[AlbumInfo]:
     artist = candidate.artist or _tagged_album_artist(album_path)
 
     title = _album_title(album_path, artist)
-    found = discogs.fetch_album(artist or None, title)
+    found, lookup_status = discogs.lookup_album(artist or None, title)
     if found and not _tracklist_matches(album_path, found.get("tracklist", [])):
         # Same-named album by a namesake artist: "Nirvana" (1990) by the 60s band
         log.info("  ℹ️  Discogs release %r has other tracks — ignored.", found.get("title"))
         found = None
+        lookup_status = 'rejected'
     if found and artist and found.get("artist") and not (
             _is_part_of(artist, found["artist"])
             or _is_part_of(_tagged_album_artist(album_path, track_artist=True), found["artist"])):
         log.warning("  ⚠️ Discogs returned another artist (%s) — ignored.", found["artist"])
         found = None
+        lookup_status = 'rejected'
     if found:
         discogs_artist = found.get("artist", "")
         download_artist = ""
@@ -216,6 +222,8 @@ def resolve_album_info(candidate: AlbumCandidate) -> Optional[AlbumInfo]:
             download_artist=download_artist,
             release_types=found.get("release_types", []),
             from_discogs=True,
+            release_id=found.get('release_id'), master_id=found.get('master_id'),
+            lookup_status=lookup_status,
         )
         log.info("✅ Discogs match: %s – %s (%s) | genre: %s",
                  info.artist, info.album, info.year or "?", info.genre or "—")
@@ -226,6 +234,7 @@ def resolve_album_info(candidate: AlbumCandidate) -> Optional[AlbumInfo]:
             year=extract_year_from_folder(album_path.name) or album_tag_values(album_audio_files(album_path))[1],
             album=strip_artist_prefix(title, artist) if artist else title,
             genre=_existing_genre(album_path),
+            lookup_status=lookup_status,
         )
         log.info("  ℹ️  No Discogs data%s.", f" — using existing genre tag: {info.genre}" if info.genre else "")
 
@@ -300,9 +309,9 @@ def _disc_of(audio_file: Path, album_path: Path) -> int:
     return folder or 1
 
 
-def process_tracks(album_path: Path, info: AlbumInfo) -> None:
+def plan_tracks(album_path: Path, info: AlbumInfo) -> list[tuple[Path, Path, TrackMetadata]]:
     """
-    Rename and tag every audio file in *album_path*.
+    Build the track metadata and naming plan without changing files.
 
     Tag priority per field:
     - title:  existing tag unless missing/generic ("Track 1"), then Discogs
@@ -373,6 +382,11 @@ def process_tracks(album_path: Path, info: AlbumInfo) -> None:
             remixers=tuple(track_remixers(title, info.tracklist)),
         )))
 
+    return prepared
+
+
+def process_tracks(album_path: Path, info: AlbumInfo) -> None:
+    prepared = plan_tracks(album_path, info)
     targets = [target for _, target, _ in prepared]
     if len(set(targets)) != len(targets):
         raise ValueError("several tracks would have the same file name")
@@ -404,7 +418,7 @@ def library_copies(album_path: Path, info: AlbumInfo) -> list[Path]:
             and album_identity(existing.name) == album_identity(dest.name)]
 
 
-def move_to_library(album_path: Path, info: AlbumInfo) -> Path:
+def move_to_library(album_path: Path, info: AlbumInfo, job: Optional[dict] = None) -> Path:
     """
     Move the album to <MUSIC_PATH>/<artist>/<YYYY - Album>, moving an older
     copy of it aside; returns the new path.
@@ -418,10 +432,19 @@ def move_to_library(album_path: Path, info: AlbumInfo) -> Path:
         return dest
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    for existing in library_copies(album_path, info):
-        aside = move_aside(existing)
-        log.warning("  ⚠️  Album already in the library — old version moved to %s", aside)
-    shutil.move(str(album_path), str(dest))
+    backups = []
+    try:
+        for existing in library_copies(album_path, info):
+            aside = move_aside(existing)
+            backups.append((existing, aside))
+            if job is not None:
+                job['backups'] = [[str(a), str(b)] for a, b in backups]
+                jobs.save(job)
+        album_path.rename(dest)
+    except Exception:
+        for original, aside in reversed(backups):
+            aside.rename(original)
+        raise
     normalize_permissions(dest)
     log.info("✅ Moved to: %s", dest)
     return dest
@@ -444,7 +467,7 @@ def _cleanup_empty_download_dir(artist_folder: Optional[str]) -> None:
 # Pipeline
 # ---------------------------------------------------------------------------
 
-def process_album(candidate: AlbumCandidate, state: RunState) -> Optional[bool]:
+def _process_album(candidate: AlbumCandidate, state: RunState, job: Optional[dict] = None) -> Optional[bool]:
     """
     Full pipeline for one album:
 
@@ -488,14 +511,18 @@ def process_album(candidate: AlbumCandidate, state: RunState) -> Optional[bool]:
             if config.UPCONVERT_ACTION == "skip":
                 log.error("⛔ Апконверт — альбом оставлен в загрузках: %s", album_path)
                 return False
-            if config.UPCONVERT_ACTION == "ask":
+            if config.UPCONVERT_ACTION == "ask" and not (job or {}).get('approve_upconvert'):
                 log.warning("⏸️  Апконверт — альбом ждёт решения: %s", album_path)
                 state.deferred.append(upconvert.deferred_entry(album_path, report))
                 return None
 
-    info = resolve_album_info(candidate)
+    info = AlbumInfo(**job['metadata']) if job and job.get('metadata') else resolve_album_info(candidate)
     if info is None:
         return False
+    state.lookups.append({'artist': info.artist, 'album': info.album, 'status': info.lookup_status})
+    if job is not None and info.from_discogs:
+        job['metadata'] = asdict(info)
+        jobs.save(job)
 
     apply_cover(album_path, info)
     log.info("🧹 Cleaning non-music files…")
@@ -506,7 +533,7 @@ def process_album(candidate: AlbumCandidate, state: RunState) -> Optional[bool]:
     measured = quality.passport(album_path)
 
     copies = library_copies(album_path, info)
-    if copies and config.REPLACE_ACTION == "ask":
+    if copies and config.REPLACE_ACTION == "ask" and not (job or {}).get('approve_replace'):
         old = quality.passport(copies[0])
         log.warning("⏸️  Альбом уже есть в медиатеке — ждёт решения: %s", copies[0].relative_to(config.MUSIC_PATH))
         log.info("   было:  %s\n   новое: %s", quality.summary(old), quality.summary(measured))
@@ -519,7 +546,12 @@ def process_album(candidate: AlbumCandidate, state: RunState) -> Optional[bool]:
         })
         return None
 
-    dest = move_to_library(album_path, info)
+    if job is not None:
+        job.update(status='committing', destination=str(_destination(info)), measured=measured, backups=[],
+                   prepared_manifest=jobs.manifest(album_path),
+                   name=f"{info.artist.split(';')[0]} — {info.album}")
+        jobs.save(job)
+    dest = move_to_library(album_path, info, job)
     quality.remember(dest, measured)
     state.processed.append({"kind": "processed", "path": str(dest),
                             "name": f"{info.artist.split(';')[0]} — {info.album}"})
@@ -531,3 +563,53 @@ def process_album(candidate: AlbumCandidate, state: RunState) -> Optional[bool]:
 
     log.info("✅ Album processed successfully!")
     return True
+
+
+def process_album(candidate: AlbumCandidate, state: RunState) -> Optional[bool]:
+    source = candidate.path.resolve()
+    if source.is_relative_to(config.MUSIC_PATH.resolve()):
+        raise ValueError('use library maintenance for albums already inside the library')
+    if source == config.DOWNLOADS_PATH.resolve() or candidate.path.is_symlink() or any(
+            p.is_symlink() for p in source.rglob('*')):
+        raise ValueError('invalid album root or symbolic link in source')
+    job = jobs.open_job(source)
+    # A rename into the library is atomic; a restart after that point only needs cleanup.
+    if job.get('status') == 'committing':
+        destination = Path(job['destination'])
+        if destination.is_dir() and not Path(job['work']).exists():
+            if jobs.manifest(destination) != job['prepared_manifest']:
+                raise RuntimeError('published album changed; source retained for manual review')
+            quality.remember(destination, job['measured'])
+            jobs.finish(job)
+            state.processed.append({'kind': 'processed', 'path': str(destination), 'name': job['name']})
+            return True
+        for original, aside in reversed(job.get('backups', [])):
+            if Path(aside).exists() and not Path(original).exists():
+                Path(aside).rename(original)
+    if job.get('status') == 'done' or (job.get('source_manifest') is not None
+                                      and jobs.manifest(source) != job['source_manifest']):
+        job.update(approve_upconvert=False, approve_replace=False, deferred=None, metadata=None)
+    job['approve_upconvert'] = job.get('approve_upconvert', False) or config.UPCONVERT_ACTION == 'warn'
+    job['approve_replace'] = job.get('approve_replace', False) or config.REPLACE_ACTION == 'replace'
+    try:
+        work = jobs.prepare(job)
+        before = len(state.deferred)
+        result = _process_album(AlbumCandidate(work, candidate.artist), state, job)
+        if result is True:
+            jobs.finish(job)
+            _cleanup_empty_download_dir(candidate.artist)
+        elif result is None:
+            entry = state.deferred[before]
+            entry['path'] = str(source)
+            entry['source_manifest'] = job['source_manifest']
+            job.update(status='waiting', deferred=entry)
+            jobs.save(job)
+        else:
+            job.update(status='failed')
+            jobs.save(job)
+        return result
+    except Exception as exc:
+        if job.get('status') != 'committing':
+            job.update(status='failed', error=str(exc))
+            jobs.save(job)
+        raise

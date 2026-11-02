@@ -17,7 +17,7 @@ from typing import Optional
 
 import requests
 
-from . import config, discogs, quality
+from . import config, discogs, jobs, quality
 from .files import album_audio_files, library_album_dirs
 from .tags import read_tags
 
@@ -110,7 +110,9 @@ def dossier(album_dir: Path) -> dict:
             ],
         },
     }
-    found = discogs.fetch_album(facts["album"]["artist"], facts["album"]["title"] or album_dir.name)
+    found = jobs.identity_for(passport.get('audio', []))
+    if found is None:
+        found = discogs.fetch_album(facts["album"]["artist"], facts["album"]["title"] or album_dir.name)
     if found and found.get("release_id"):
         history = discogs.edition_history(found["release_id"], found.get("master_id"))
         history["note"] = ("release — издание, найденное поиском Discogs: не обязательно то, "

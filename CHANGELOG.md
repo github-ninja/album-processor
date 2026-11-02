@@ -6,6 +6,17 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — import architecture
+- Prepare imports in private library-side workspaces, retain original downloads until
+  publication, restore replaced albums on publication failure and recover interrupted
+  post-publication cleanup on the next import request.
+- Persist import jobs, decisions and matched Discogs release/master IDs as atomic JSON
+  records. Restore decision buttons after restart and reject changed downloads.
+- Separate track planning from writes, share retained tag values between conversion
+  and maintenance, and deliver structured import summaries with distinct lookup states.
+- Version mastering measurements and reuse stored Discogs identification in opinions.
+  No new dependencies or background import tasks.
+
 ### Added
 - Mastering passport: DR (TT DR Meter method), hard-clipping flat tops, loudness and
   true peak for every album, with a 🟢/🟡/🔴 grade in the import report.

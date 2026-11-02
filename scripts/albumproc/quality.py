@@ -35,6 +35,7 @@ from .files import album_audio_files, library_album_dirs
 log = logging.getLogger(__name__)
 
 _BLOCK_SECONDS = 3
+ANALYSIS_VERSION = 1
 _CLIP_WINDOW_DB = 1.0
 # 🔴: crushed (DR ≤ 5), or heavily clipped without the dynamics to carry it;
 # clipped transients on an open master (DR 11, peaks shaved) stay 🟡
@@ -220,7 +221,8 @@ def passport(album_dir: Path, store: Optional[dict] = None) -> dict:
     files = [f for f in album_audio_files(album_dir) if f.suffix.lower() == ".flac"]
     identities = {path: audio_id(path) for path in files}
     key = sorted(identities.values())
-    found = next((p for p in store.values() if p.get("audio") == key), None)
+    found = next((p for p in store.values() if p.get("audio") == key
+                  and p.get('analysis_version', 1) == ANALYSIS_VERSION), None)
     if found is None:
         found = {**measure_album(album_dir), "audio": key}
     # Cached measurements survive renames, but names/order and loudness tags do not.
@@ -239,7 +241,7 @@ def passport(album_dir: Path, store: Optional[dict] = None) -> dict:
         track["lufs"] = round(-18 - float(gain[0]), 1) if gain else None
         track["true_peak"] = float(peak) if peak else None
         tracks.append(track)
-    found = {**found, "tracks": tracks}
+    found = {**found, "tracks": tracks, 'analysis_version': ANALYSIS_VERSION}
     gain = (FLAC(files[0]).get("replaygain_album_gain") or [""])[0].split() if files else []
     found["lufs"] = round(-18 - float(gain[0]), 1) if gain else None
     if config.MUSIC_PATH in album_dir.parents:

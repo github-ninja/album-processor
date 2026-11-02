@@ -42,7 +42,7 @@ from .names import (
     is_various_artists, sanitize_path_component, split_genres, split_multi_value, strip_artist_prefix,
     track_file_name, track_remixers,
 )
-from .tags import album_tag_values, embed_picture, get_embedded_picture, read_tags, update_album_tags
+from .tags import album_tag_values, embed_picture, flac_values as _flac_values, get_embedded_picture, read_tags, update_album_tags
 
 log = logging.getLogger(__name__)
 
@@ -206,18 +206,6 @@ def _plan_title(album_dir: Path, files: list[Path], check_all: bool) -> dict:
         result["note"] = result["note"] or "нет совпадения в Discogs — только локальная чистка"
     result["new_folder"] = album_folder_name(result["new_year"], result["new_album"])
     return result
-
-
-def _flac_values(path: Path) -> dict[str, list[str]]:
-    """Current FLAC fields, or the fields retained by lossless conversion."""
-    if path.suffix.lower() == ".flac":
-        return {k.lower(): list(v) for k, v in FLAC(path).items()}
-    tags = read_tags(path)
-    mapping = {"artist": "artist", "title": "title", "album": "album", "date": "date",
-               "genre": "genre", "albumartist": "album_artist", "tracknumber": "track_number",
-               "discnumber": "disc_number"}
-    return {field: split_multi_value(tags[key]) if field in {"artist", "albumartist", "genre"} else [tags[key]]
-            for field, key in mapping.items() if tags[key]}
 
 
 def _plan_tag_fixes(album_dir: Path, files: list[Path], genres: dict[str, str],
