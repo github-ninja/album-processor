@@ -125,6 +125,12 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   missing tracks are fetched), up to three tries.  An album still incomplete is not
   filed: it is moved to `deezer/incomplete/`.  `/newalbum` also picks up albums downloaded through
   deezer-downloader's own web UI — but not while it is still downloading.
+  Every Deezer import, including an explicit CLI path, must match the exact album's
+  track count from Deezer. Incomplete folders go to `deezer/incomplete/`; unknown
+  album identity or an unavailable track count blocks import and retains the source.
+  Album IDs are retained in import jobs; existing web downloads need their queue
+  entry to identify the album. If that entry was lost on restart, download the exact
+  album again through `/deezer` to establish its identity.
 
 **Library maintenance — `/fixlibrary`**
 - Checks every album against the conventions and shows a plan before touching

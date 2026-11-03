@@ -22,8 +22,8 @@ from typing import Optional
 
 import requests
 
-from . import config
-from .files import library_album_dirs
+from . import config, jobs
+from .files import album_audio_files, library_album_dirs
 from .names import album_identity, name_key, sanitize_path_component
 
 log = logging.getLogger(__name__)
@@ -130,6 +130,51 @@ def _track_count(album_id: int) -> Optional[int]:
         return None
 
 
+def quarantine(album_dir: Path) -> Path:
+    """Retain an incomplete album outside the import discovery directory."""
+    aside = config.DEEZER_DOWNLOADER_DIR / 'incomplete' / album_dir.name
+    aside.parent.mkdir(parents=True, exist_ok=True)
+    if aside.exists():
+        aside = aside.with_name(f'{aside.name}-{uuid.uuid4().hex[:12]}')
+    shutil.move(str(album_dir), str(aside))
+    return aside
+
+
+def ensure_complete(album_dir: Path, album_id: Optional[int] = None) -> None:
+    """One completeness gate for downloads, discovery and explicit-path imports."""
+    job = jobs.open_job(album_dir)
+    album_id = album_id or job.get('deezer_album_id')
+    if album_id is None:
+        # The queue is evidence of identity, never evidence of completeness.
+        for task in reversed(_queue()):
+            files = _downloaded_files(task.get('result', ''))
+            folder = album_dir.relative_to(config.DEEZER_DOWNLOADER_DIR).as_posix() + '/'
+            if not any(name.startswith(folder) for name in files):
+                continue
+            try:
+                args = ast.literal_eval(html.unescape(task.get('args', '')))
+                candidate = args.get('album_id')
+                if type(candidate) is int and candidate > 0:
+                    album_id = candidate
+                    break
+            except (ValueError, SyntaxError, AttributeError):
+                continue
+    if album_id is None:
+        raise DeezerError(f'{album_dir.name}: не удалось установить Deezer album ID; импорт остановлен')
+    job['deezer_album_id'] = album_id
+    jobs.save(job)
+    total = _track_count(album_id)
+    if total is None:
+        raise DeezerError(f'{album_dir.name}: не удалось подтвердить число треков Deezer; импорт остановлен')
+    files = [str(f.relative_to(config.DEEZER_DOWNLOADER_DIR)) for f in album_audio_files(album_dir)]
+    count = len(_existing_tracks(files))
+    if count != total:
+        aside = quarantine(album_dir)
+        job.update(status='incomplete', deferred=None)
+        jobs.save(job)
+        raise DeezerError(f'{album_dir.name}: скачано {count} из {total} треков; альбом не импортирован, он в {aside}')
+
+
 def _run_task(album_id: int, deadline: float) -> list[str]:
     """Queue the album once and wait for the task: the files it has (downloaded or already there)."""
     if time.monotonic() >= deadline:
@@ -161,7 +206,7 @@ def download(album_id: int, timeout: float = _DOWNLOAD_TIMEOUT) -> Path:
     total = _track_count(album_id)
     for attempt, pause in enumerate(_RETRY_PAUSES + [None], start=1):
         files = _existing_tracks(_run_task(album_id, deadline))
-        if files and (not total or len(files) >= total):
+        if files and (total is None or len(files) >= total):
             break
         if pause is None:
             break
@@ -177,14 +222,11 @@ def download(album_id: int, timeout: float = _DOWNLOAD_TIMEOUT) -> Path:
         raise DeezerError(f"скачано, но папка альбома не найдена: {album_dir} (проверьте DEEZER_DOWNLOADER_DIR)")
     if total and len(files) < total:
         # Out of the albums folder, or /newalbum would file it as if it were whole
-        aside = config.DEEZER_DOWNLOADER_DIR / "incomplete" / album_dir.name
-        aside.parent.mkdir(exist_ok=True)
-        if aside.exists():
-            aside = aside.with_name(f"{aside.name}-{uuid.uuid4().hex[:12]}")
-        shutil.move(str(album_dir), str(aside))
+        aside = quarantine(album_dir)
         raise DeezerError(f"после {len(_RETRY_PAUSES) + 1} попыток скачано только {len(files)} из {total} треков — "
                           f"часть альбома недоступна на Deezer. Неполный альбом не обработан, он в "
                           f"{aside.relative_to(config.DOWNLOADS_PATH)}")
+    ensure_complete(album_dir, album_id)
     stale = config.DEEZER_DOWNLOADER_DIR / "incomplete" / album_dir.name
     if stale.is_dir():
         shutil.rmtree(stale)  # an earlier incomplete try: the album is whole now

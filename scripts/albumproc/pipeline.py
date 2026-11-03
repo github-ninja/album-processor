@@ -586,6 +586,12 @@ def process_album(candidate: AlbumCandidate, state: RunState) -> Optional[bool]:
         for original, aside in reversed(job.get('backups', [])):
             if Path(aside).exists() and not Path(original).exists():
                 Path(aside).rename(original)
+    if source.is_relative_to((config.DEEZER_DOWNLOADER_DIR / 'albums').resolve()):
+        if deezer_dl.busy():
+            raise deezer_dl.DeezerError('deezer-downloader занят или недоступен; импорт остановлен')
+        deezer_dl.ensure_complete(source)
+        # The completeness gate may have saved the source's Deezer identity.
+        job = jobs.open_job(source)
     if job.get('status') == 'done' or (job.get('source_manifest') is not None
                                       and jobs.manifest(source) != job['source_manifest']):
         job.update(approve_upconvert=False, approve_replace=False, deferred=None, metadata=None)

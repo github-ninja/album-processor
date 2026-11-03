@@ -6,6 +6,15 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-11-03
+
+### Fixed
+- Gate every Deezer import on a confirmed album identity and exact track count,
+  including `/newalbum` discovery and explicit CLI paths. Quarantine incomplete
+  folders, retain sources when verification is unavailable, and persist album IDs
+  in import jobs so queue restarts do not lose established identities.
+- An unavailable Deezer track count no longer means a download is complete.
+
 ## [1.1.0] — 2026-11-03
 
 ### Changed — import architecture
@@ -116,6 +125,7 @@ First public release.
 - `/fixlibrary`: plan → review → apply for names, tags, covers, format, ReplayGain,
   release types and duplicates; journal and moved-aside copies for every change.
 
-[Unreleased]: https://github.com/github-ninja/album-processor/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/github-ninja/album-processor/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/github-ninja/album-processor/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/github-ninja/album-processor/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/github-ninja/album-processor/releases/tag/v1.0.0

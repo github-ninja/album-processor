@@ -2,7 +2,7 @@
 
 from unittest import mock
 
-from albumproc import config, deezer_dl, pipeline
+from albumproc import config, deezer_dl, jobs, pipeline
 from tests.helpers import TempLibraryCase, make_flac
 
 
@@ -21,7 +21,7 @@ class DeezerDownloader(TempLibraryCase):
         self.base = self.downloads / "deezer"
         for patcher in (mock.patch.object(config, "DEEZER_DOWNLOADER_DIR", self.base),
                         mock.patch.object(config, "DEEZER_DOWNLOADER_URL", "http://deezer:5000"),
-                        mock.patch.object(deezer_dl, "_track_count", return_value=None),
+                        mock.patch.object(deezer_dl, "_track_count", return_value=1),
                         mock.patch.object(deezer_dl.time, "sleep")):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -87,6 +87,57 @@ class DeezerDownloader(TempLibraryCase):
             self.assertEqual(sorted(c.path.name for c in pipeline.find_new_albums()), ["Arovane - Lilies", "Spokes"])
         with mock.patch.object(deezer_dl, "busy", return_value=True):
             self.assertEqual([c.path.name for c in pipeline.find_new_albums()], ["Spokes"])
+
+    def test_discovered_partial_album_cannot_bypass_download_validation(self):
+        album = self.base / 'albums' / 'Blotnik Brothers - Pragmatic Response'
+        track = make_flac(album / '02 - Ergo.flac')
+        task = {'args': '{&#39;album_id&#39;: 153422}', 'state': 'mission accomplished',
+                'result': repr([str(track.relative_to(self.base))])}
+        with mock.patch.object(deezer_dl, 'busy', return_value=False), \
+                mock.patch.object(deezer_dl, '_queue', return_value=[task]), \
+                mock.patch.object(deezer_dl, '_track_count', return_value=4), \
+                mock.patch.object(jobs, 'prepare') as prepare:
+            candidate, = pipeline.find_new_albums()
+            with self.assertRaisesRegex(deezer_dl.DeezerError, '1 из 4'):
+                pipeline.process_album(candidate, pipeline.RunState())
+        prepare.assert_not_called()
+        self.assertFalse(album.exists())
+        self.assertTrue((self.base / 'incomplete' / album.name / track.name).exists())
+        self.assertEqual(list(self.music.glob('Blotnik Brothers/*')), [])
+
+    def test_unknown_total_blocks_explicit_import_without_moving_source(self):
+        album = self.base / 'albums' / 'A - B'
+        make_flac(album / 'one.flac')
+        job = jobs.open_job(album); job['deezer_album_id'] = 1; jobs.save(job)
+        with mock.patch.object(deezer_dl, 'busy', return_value=False), \
+                mock.patch.object(deezer_dl, '_track_count', return_value=None), \
+                mock.patch.object(jobs, 'prepare') as prepare:
+            with self.assertRaisesRegex(deezer_dl.DeezerError, 'число треков'):
+                pipeline.process_album(pipeline.candidate_from_path(album), pipeline.RunState())
+        prepare.assert_not_called()
+        self.assertTrue(album.is_dir())
+
+    def test_missing_identity_does_not_guess_from_folder_name(self):
+        album = self.base / 'albums' / 'A - B'; make_flac(album / 'one.flac')
+        with mock.patch.object(deezer_dl, '_queue', return_value=[]):
+            with self.assertRaisesRegex(deezer_dl.DeezerError, 'album ID'):
+                deezer_dl.ensure_complete(album)
+        self.assertTrue(album.is_dir())
+
+    def test_complete_download_keeps_identity_after_queue_restart(self):
+        album = self.base / 'albums' / 'A - B'; make_flac(album / 'one.flac')
+        deezer_dl.ensure_complete(album, 123)
+        with mock.patch.object(deezer_dl, '_queue', side_effect=AssertionError('queue not needed')):
+            deezer_dl.ensure_complete(album)
+        self.assertEqual(jobs.open_job(album)['deezer_album_id'], 123)
+
+    def test_unknown_total_is_not_treated_as_successful_download(self):
+        album = self.base / 'albums' / 'A - B'; track = make_flac(album / 'one.flac')
+        with mock.patch.object(deezer_dl, '_track_count', return_value=None), \
+                mock.patch.object(deezer_dl, '_run_task', return_value=[str(track.relative_to(self.base))]):
+            with self.assertRaisesRegex(deezer_dl.DeezerError, 'число треков'):
+                deezer_dl.download(1)
+        self.assertTrue(track.exists())
 
 
 class CandidateFromPath(TempLibraryCase):
