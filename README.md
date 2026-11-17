@@ -136,7 +136,8 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
 
 **Library maintenance — `/fixlibrary`**
 - Checks every album against the conventions and shows a plan before touching
-  anything: apply all, go through it one by one, or cancel.
+  anything: apply all, go through it one by one, or cancel. Planning progress is
+  streamed to Telegram and container logs, including the current album and elapsed time.
 - Fixes names, tag hygiene (invisible characters, genre spelling, totals),
   artist spelling across the library, covers, audio format, missing ReplayGain
   and release types, duplicates (the same album under another year or case).

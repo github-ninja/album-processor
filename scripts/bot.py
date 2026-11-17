@@ -33,6 +33,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -105,7 +106,7 @@ def _is_allowed(update: Update) -> bool:
 # ---------------------------------------------------------------------------
 
 async def _run_processor(args: list[str], env_overrides: dict[str, str],
-                         exclusive: bool = True) -> subprocess.CompletedProcess:
+                         exclusive: bool = True, on_output=None) -> subprocess.CompletedProcess:
     """Run album_processor.py; *exclusive* runs (everything that moves files) go one at a time."""
     env = {**os.environ, **env_overrides}
 
@@ -114,6 +115,35 @@ async def _run_processor(args: list[str], env_overrides: dict[str, str],
         proc = await asyncio.create_subprocess_exec(
             *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             env=env, start_new_session=True)
+        if on_output is not None:
+            async def read_stream(stream, name):
+                chunks = []
+                while line := await stream.readline():
+                    chunks.append(line)
+                    await on_output(name, line.decode(errors="replace").rstrip())
+                return b"".join(chunks)
+
+            try:
+                stdout, stderr = await asyncio.gather(
+                    read_stream(proc.stdout, "stdout"), read_stream(proc.stderr, "stderr"))
+            except asyncio.CancelledError:
+                if proc.returncode is None:
+                    try:
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        await proc.wait()
+                raise
+            return subprocess.CompletedProcess(command, await proc.wait(),
+                                               stdout.decode(errors="replace"),
+                                               stderr.decode(errors="replace"))
         try:
             stdout, stderr = await proc.communicate()
         except asyncio.CancelledError:
@@ -775,20 +805,56 @@ async def cmd_fixlibrary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     check_all = bool(context.args) and context.args[0].lower() == "all"
-    await update.message.reply_text(
+    status = await update.message.reply_text(
         "⏳ Проверяю библиотеку" + (" и сверяю все альбомы с Discogs" if check_all else "")
         + "… Это может занять несколько минут."
     )
+    started = time.monotonic()
+    progress = {"checked": "Подготовка списка альбомов…", "last_edit": 0.0}
+
+    async def report_progress(_stream: str, line: str) -> None:
+        if not line:
+            return
+        log.info("fixlibrary: %s", line)
+        if line.startswith(("🔎 [", "🎤 [")):
+            progress["checked"] = line
+            now = time.monotonic()
+            if now - progress["last_edit"] >= 15:
+                elapsed = int(now - started)
+                minutes, seconds = divmod(elapsed, 60)
+                try:
+                    await status.edit_text(f"⏳ Проверяю медиатеку: {progress['checked']}\n"
+                                           f"Прошло: {minutes}:{seconds:02d}")
+                    progress["last_edit"] = now
+                except Exception:
+                    log.debug("Could not update fixlibrary progress message", exc_info=True)
+
+    async def heartbeat() -> None:
+        while True:
+            await asyncio.sleep(30)
+            elapsed = int(time.monotonic() - started)
+            minutes, seconds = divmod(elapsed, 60)
+            try:
+                await status.edit_text(f"⏳ Проверяю медиатеку: {progress['checked']}\n"
+                                       f"Прошло: {minutes}:{seconds:02d}")
+                progress["last_edit"] = time.monotonic()
+            except Exception:
+                log.debug("Could not update fixlibrary heartbeat", exc_info=True)
+
+    heartbeat_task = asyncio.create_task(heartbeat())
     with tempfile.TemporaryDirectory() as tmp:
         plan_file = Path(tmp) / "plan.json"
         args = ["--fix-library", "--plan-out", str(plan_file)] + (["--all"] if check_all else [])
         try:
-            result = await _run_processor(args, {})
+            result = await _run_processor(args, {}, on_output=report_progress)
             plan = json.loads(plan_file.read_text(encoding="utf-8"))
         except Exception as exc:
             await update.message.reply_text(f"❌ Не удалось составить план:\n{exc}")
             log.exception("Failed to build library fix plan")
             return
+        finally:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
 
     if result.returncode != 0:
         await _reply_with_output(update.message, result)

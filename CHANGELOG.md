@@ -7,6 +7,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- `/fixlibrary` streams album-by-album progress and Discogs output to container logs,
+  updates its Telegram status periodically and sends a heartbeat while planning.
 - Discogs identification now searches the master first for album identity, then
   chooses a matching audio edition for its tracklist. DVD/video editions cannot
   win from one-sided track overlap; `/fixlibrary all` uses the same local-track-aware lookup.

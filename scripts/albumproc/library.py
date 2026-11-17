@@ -206,8 +206,12 @@ def _canonical_artists(album_dirs: list[Path], use_discogs: bool) -> dict[str, s
             for name in split_multi_value(tags["artist"]) + split_multi_value(tags["album_artist"]):
                 counts[name.lower()][name] += 1
     canonical = {}
-    for key, spellings in counts.items():
+    variants = [(key, spellings) for key, spellings in counts.items() if len(spellings) > 1]
+    for index, (key, spellings) in enumerate(variants, 1):
         if len(spellings) > 1:
+            if use_discogs:
+                log.info("🎤 [%d/%d] Проверяю написание исполнителя: %s",
+                         index, len(variants), spellings.most_common(1)[0][0])
             found = discogs.canonical_artist_name(spellings.most_common(1)[0][0]) if use_discogs else None
             canonical[key] = found if found and found.lower() == key else spellings.most_common(1)[0][0]
     return canonical
@@ -448,9 +452,10 @@ def plan_library_fixes(check_all: bool = False) -> list[dict]:
         )
 
     plan = duplicates
-    for album_dir in album_dirs:
+    for index, album_dir in enumerate(album_dirs, 1):
         files = album_audio_files(album_dir)
         artist = album_dir.parent.name
+        log.info("🔎 [%d/%d] %s / %s", index, len(album_dirs), artist, album_dir.name)
         title = _plan_title(album_dir, files, check_all)
         canonical_tracklist = title.pop("_tracklist", None)
 

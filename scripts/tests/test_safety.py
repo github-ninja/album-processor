@@ -294,6 +294,25 @@ class BotLifecycle(unittest.IsolatedAsyncioTestCase):
                     await asyncio.wait_for(task, timeout=10)
         self.assertIsNotNone(processes[0].returncode)
 
+    async def test_processor_streams_progress_and_keeps_complete_output(self):
+        import bot
+        import tempfile
+        from pathlib import Path
+        lines = []
+        async def capture(stream, line):
+            lines.append((stream, line))
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / 'progress.py'
+            script.write_text('import sys\nprint("album 1/2", flush=True)\n'
+                              'print("Discogs retry", file=sys.stderr, flush=True)\n')
+            with mock.patch.object(bot, 'PROCESSOR_SCRIPT', str(script)), \
+                    mock.patch.object(bot, '_processor_lock', asyncio.Lock()):
+                result = await bot._run_processor([], {}, on_output=capture)
+        self.assertEqual(result.stdout.strip(), 'album 1/2')
+        self.assertEqual(result.stderr.strip(), 'Discogs retry')
+        self.assertIn(('stdout', 'album 1/2'), lines)
+        self.assertIn(('stderr', 'Discogs retry'), lines)
+
 
 class ConvertedLibrary(TempLibraryCase):
     def test_alac_conversion_and_renames_are_one_idempotent_plan(self):
