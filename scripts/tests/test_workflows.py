@@ -359,6 +359,38 @@ class FixLibrary(TempLibraryCase):
         self.assertTrue((self.music / "The Flashbulb" / "2022 - Kirlian Tapes v1.0").is_dir())
         self.assertEqual(library.plan_library_fixes(), [])  # nothing left: fixes are a fixpoint
 
+    def test_full_discogs_check_canonicalises_titles_from_a_complete_tracklist(self):
+        album = self.music / "Test Artist" / "2000 - Test Album"
+        for number, title in enumerate(("Wrong One", "Right Two"), 1):
+            make_flac(album / f"{number:02}.flac", tracknumber=str(number), title=title,
+                      artist="Test Artist", albumartist="Test Artist", album="Test Album",
+                      date="2000", genre="Electronic", releasetype="album")
+        found = {"artist": "Test Artist", "title": "Test Album", "year": "2000",
+                 "tracklist": [{"position": "1", "title": "Right One"},
+                               {"position": "2", "title": "Right Two"}]}
+        with mock.patch.object(library, "library_album_dirs", return_value=[album]), \
+                mock.patch.object(discogs, "fetch_album", return_value=found):
+            plan = library.plan_library_fixes(check_all=True)
+
+        entry = plan[0]
+        title_fixes = {rel: new for rel, field, _, new in entry["tag_fixes"] if field == "title"}
+        self.assertEqual(title_fixes, {"01.flac": ["Right One"]})
+        self.assertIn(["01.flac", "01. Test Artist - Right One.flac"], entry["file_renames"])
+
+    def test_full_discogs_check_leaves_titles_when_tracklist_is_incomplete(self):
+        album = self.music / "Test Artist" / "2000 - Test Album"
+        for number, title in enumerate(("First Wrong", "Second Wrong"), 1):
+            make_flac(album / f"{number:02}.flac", tracknumber=str(number), title=title,
+                      artist="Test Artist", albumartist="Test Artist", album="Test Album",
+                      date="2000", genre="Electronic", releasetype="album")
+        found = {"artist": "Test Artist", "title": "Test Album", "year": "2000",
+                 "tracklist": [{"position": "1", "title": "Canonical First"}]}
+        with mock.patch.object(library, "library_album_dirs", return_value=[album]), \
+                mock.patch.object(discogs, "fetch_album", return_value=found):
+            plan = library.plan_library_fixes(check_all=True)
+
+        self.assertFalse(any(field == "title" for _, field, _, _ in plan[0]["tag_fixes"]))
+
 
 class ReleaseTypeAndRemixers(TempLibraryCase):
     def test_download_gets_release_type_and_remixers(self):

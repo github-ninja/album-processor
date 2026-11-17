@@ -6,6 +6,11 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `/fixlibrary all` now canonicalises track titles and filenames from a matched
+  Discogs release when its complete tracklist matches the library track count.
+  Partial or mismatched tracklists are not used to rewrite titles.
+
 ## [1.1.1] — 2026-11-03
 
 ### Fixed
