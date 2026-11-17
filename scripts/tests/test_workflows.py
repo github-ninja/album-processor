@@ -298,6 +298,52 @@ class DiscogsTitleTypo(TempLibraryCase):
 
 
 class DiscogsVersionOfAnAlbum(TempLibraryCase):
+    def test_release_master_link_wins_over_conflicting_master_search(self):
+        release_url = "matched-release"
+        details = {
+            release_url: {"id": 12, "master_id": 8, "title": "Mutter", "year": 2001,
+                          "artists": [{"name": "Rammstein"}], "tracklist": []},
+            f"{discogs._API}/masters/8": {"title": "Mutter", "year": 2001,
+                                             "artists": [{"name": "Rammstein"}]},
+        }
+
+        def search(**params):
+            if params.get("type") == "master":
+                return [{"id": 9, "title": "Rammstein - Mutter", "resource_url": f"{discogs._API}/masters/9"}]
+            return [{"title": "Rammstein - Mutter", "master_id": 8, "resource_url": release_url}]
+
+        with mock.patch.object(discogs, "search", side_effect=search), \
+                mock.patch.object(discogs, "api_get", side_effect=lambda url, **kw: details.get(url, {})) as get:
+            found = discogs.fetch_album("Rammstein", "Mutter")
+        self.assertEqual(found["master_id"], 8)
+        self.assertEqual(found["title"], "Mutter")
+        self.assertIn(mock.call(f"{discogs._API}/masters/8"), get.call_args_list)
+        self.assertNotIn(mock.call(f"{discogs._API}/masters/9"), get.call_args_list)
+
+    def test_tracklist_score_penalizes_wrong_order_and_allows_bonus_tracks(self):
+        songs = ["Mein Herz Brennt", "Links 2 3 4", "Sonne", "Mutter"]
+        in_order = {"tracklist": [{"title": title} for title in songs]}
+        shuffled = {"tracklist": [{"title": title} for title in [songs[0], songs[2], songs[3], songs[1]]]}
+        expanded = {"tracklist": [{"title": songs[0]}, {"title": "Bonus"},
+                                   *[{"title": title} for title in songs[1:]]]}
+        self.assertGreater(discogs._tracklist_score(songs, in_order),
+                           discogs._tracklist_score(songs, shuffled))
+        self.assertGreater(discogs._tracklist_score(songs, in_order),
+                           discogs._tracklist_score(songs, expanded))
+
+    def test_canonical_titles_are_skipped_when_discogs_positions_conflict_with_local_order(self):
+        album = self.downloads / "Rammstein" / "Mutter"
+        local_titles = ["Mein Herz Brennt", "Links 2 3 4", "Sonne", "Ich Will"]
+        for number, title in enumerate(local_titles, 1):
+            make_flac(album / f"{number:02}.flac", tracknumber=str(number), title=title)
+        wrong_discogs_order = ["Mein Herz Brennt", "Sonne", "Ich Will", "Mutter"]
+        tracklist = [{"position": str(i), "title": title}
+                     for i, title in enumerate(wrong_discogs_order, 1)]
+        with mock.patch.object(library, "log") as log:
+            result = library._canonical_title_map(album, album_audio_files(album), tracklist)
+        self.assertEqual(result, {})
+        log.warning.assert_called_once()
+
     def test_instrumentals_keep_their_title_and_editions_take_the_masters(self):
         details = {
             "u1": {"title": "I Am Legion (Instrumentals)", "year": 2013, "master_id": 7, "artists": [{"name": "I Am Legion"}]},

@@ -52,6 +52,9 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   the files (a namesake band's album) is rejected. Discogs master data defines
   album identity; a matching audio edition supplies the tracklist, so a DVD
   key release cannot rename an audio album or win on one-sided track overlap.
+  The matched release's master link takes priority over a conflicting title
+  search; edition scoring checks track order, and low positional agreement
+  prevents bulk title rewrites from a mismatched tracklist.
 - Another version of an album — *Instrumentals*, *Remixes* — stays a separate
   album even when Discogs files it under the original's master.
 - Cleans messy folder names: `2013-09-02 - I Am Legion [GB - DVSNCD003] (FLAC 24-96)` → `I Am Legion`.

@@ -98,7 +98,15 @@ def _canonical_title_map(album_dir: Path, files: list[Path], tracklist: list[dic
     if (all(index is not None for index in exact) and len(set(exact)) == len(files)
             and set(exact) == set(range(len(tracklist)))
             and all(tracklist[index].get("title") for index in exact)):
-        return {item[2]: tracklist[index]["title"] for item, index in zip(local, exact)}
+        mapped = [tracklist[index]["title"] for index in exact]
+        existing = [read_tags(item[2])["title"] for item in local]
+        agreement = sum(discogs.title_similarity(old, new) >= discogs.TITLE_MIN_SIMILARITY
+                        for old, new in zip(existing, mapped)) / len(files)
+        if agreement >= 0.65:
+            return {item[2]: tracklist[index]["title"] for item, index in zip(local, exact)}
+        log.warning("  ⚠️  Discogs track order matches file numbers, but only %.0f%% of titles align; skipping canonical title changes.",
+                    agreement * 100)
+        return {}
 
     # Discogs uses A1/B1 for vinyl sides. Local files use sequential track
     # numbers, so derive their order from the side and track coordinates.
@@ -120,6 +128,14 @@ def _canonical_title_map(album_dir: Path, files: list[Path], tracklist: list[dic
         numbers = [number for current, number, _ in ordered_sides if current == side]
         if numbers != list(range(1, len(numbers) + 1)):
             return {}
+    mapped = [tracklist[ordered_sides[i][2]]["title"] for i in range(len(local))]
+    existing = [read_tags(item[2])["title"] for item in local]
+    agreement = sum(discogs.title_similarity(old, new) >= discogs.TITLE_MIN_SIMILARITY
+                    for old, new in zip(existing, mapped)) / len(files)
+    if agreement < 0.65:
+        log.warning("  ⚠️  Discogs side order matches file numbers, but only %.0f%% of titles align; skipping canonical title changes.",
+                    agreement * 100)
+        return {}
     return {item[2]: tracklist[ordered_sides[i][2]]["title"] for i, item in enumerate(local)}
 
 

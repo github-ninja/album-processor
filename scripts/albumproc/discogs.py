@@ -145,7 +145,7 @@ def _release_is_audio(release: dict) -> bool:
 
 
 def _tracklist_score(local_titles: list[str], release: dict) -> float:
-    """F1 overlap: an expanded video/DVD list cannot win on recall alone."""
+    """Score overlap and order, so a shuffled edition cannot win on its set alone."""
     remote = [t.get("title", "") for t in release.get("tracklist", [])
               if t.get("type_", "track") == "track" and t.get("title")]
     local = [t for t in local_titles if t]
@@ -154,7 +154,23 @@ def _tracklist_score(local_titles: list[str], release: dict) -> float:
     hits = sum(any(title_similarity(a, b) >= TITLE_MIN_SIMILARITY for b in remote) for a in local)
     precision = hits / len(local)
     recall = sum(any(title_similarity(b, a) >= TITLE_MIN_SIMILARITY for a in local) for b in remote) / len(remote)
-    return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    overlap = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+
+    # Longest common subsequence tolerates bonus tracks while preserving the
+    # ordering of the album itself. A set-only score treated a fully shuffled
+    # tracklist as a perfect match and could overwrite every local title.
+    rows = [0] * (len(remote) + 1)
+    for local_title in local:
+        previous = 0
+        for index, remote_title in enumerate(remote, 1):
+            saved = rows[index]
+            if title_similarity(local_title, remote_title) >= TITLE_MIN_SIMILARITY:
+                rows[index] = previous + 1
+            else:
+                rows[index] = max(rows[index], rows[index - 1])
+            previous = saved
+    ordered = rows[-1] / max(len(local), len(remote))
+    return 0.7 * overlap + 0.3 * ordered
 
 
 def _track_entries(release: dict) -> list[dict]:
@@ -228,11 +244,17 @@ def fetch_album(artist: Optional[str], raw_title: str, *, diagnostics: Optional[
         title = clean_title(release.get("title", ""))
         year = release.get("year") or ""
 
-        master_id = (master_match or {}).get("id") or release.get("master_id")
+        release_master_id = release.get("master_id")
+        searched_master_id = (master_match or {}).get("id")
+        if release_master_id and searched_master_id and str(release_master_id) != str(searched_master_id):
+            log.warning("  ⚠️  Master search returned %s but matched release belongs to %s; using the release link.",
+                        searched_master_id, release_master_id)
+        master_id = release_master_id or searched_master_id
         master = {}
         if master_id:
             log.info("  📥 Fetching master release…")
-            master = api_get((master_match or {}).get("resource_url") or f"{_API}/masters/{master_id}") or {}
+            master_url = (master_match or {}).get("resource_url") if str(searched_master_id) == str(master_id) else None
+            master = api_get(master_url or f"{_API}/masters/{master_id}") or {}
             master_title = clean_title(master.get("title", ""))
             if master_title and title_similarity(master_title, title) < TITLE_MIN_SIMILARITY:
                 # Mis-linked master in Discogs data — trust the release itself
