@@ -326,23 +326,37 @@ class DiscogsVersionOfAnAlbum(TempLibraryCase):
         shuffled = {"tracklist": [{"title": title} for title in [songs[0], songs[2], songs[3], songs[1]]]}
         expanded = {"tracklist": [{"title": songs[0]}, {"title": "Bonus"},
                                    *[{"title": title} for title in songs[1:]]]}
-        self.assertGreater(discogs._tracklist_score(songs, in_order),
-                           discogs._tracklist_score(songs, shuffled))
-        self.assertGreater(discogs._tracklist_score(songs, in_order),
-                           discogs._tracklist_score(songs, expanded))
+        self.assertGreater(discogs.tracklist_score(songs, in_order["tracklist"]),
+                           discogs.tracklist_score(songs, shuffled["tracklist"]))
+        self.assertGreater(discogs.tracklist_score(songs, in_order["tracklist"]),
+                           discogs.tracklist_score(songs, expanded["tracklist"]))
 
-    def test_canonical_titles_are_skipped_when_discogs_positions_conflict_with_local_order(self):
-        album = self.downloads / "Rammstein" / "Mutter"
-        local_titles = ["Mein Herz Brennt", "Links 2 3 4", "Sonne", "Ich Will"]
-        for number, title in enumerate(local_titles, 1):
+    def test_fixlibrary_keeps_local_album_identity_when_tracklist_confidence_is_low(self):
+        album = self.music / "Moby" / "1999 - Play"
+        for number, title in enumerate(["Porcelain", "Natural Blues", "Find My Baby", "Honey"], 1):
             make_flac(album / f"{number:02}.flac", tracknumber=str(number), title=title)
-        wrong_discogs_order = ["Mein Herz Brennt", "Sonne", "Ich Will", "Mutter"]
-        tracklist = [{"position": str(i), "title": title}
-                     for i, title in enumerate(wrong_discogs_order, 1)]
-        with mock.patch.object(library, "log") as log:
-            result = library._canonical_title_map(album, album_audio_files(album), tracklist)
-        self.assertEqual(result, {})
-        log.warning.assert_called_once()
+        dvd = {"artist": "Moby", "title": "Play (The DVD)", "year": "2001",
+               "tracklist": [{"position": "1", "title": "Story Of The Album"}]}
+        with mock.patch.object(discogs, "fetch_album", return_value=dvd):
+            result = library._plan_title(album, library.album_audio_files(album), check_all=True)
+        self.assertEqual((result["new_album"], result["new_year"], result["source"]),
+                         ("Play", "1999", "local"))
+        self.assertIn("слабо совпадает", result["note"])
+
+    def test_fixlibrary_rejects_a_same_size_tracklist_with_wrong_order(self):
+        album = self.music / "Rammstein" / "2001 - Mutter"
+        songs = ["Mein Herz Brennt", "Links 2 3 4", "Sonne", "Ich Will"]
+        for number, title in enumerate(songs, 1):
+            make_flac(album / f"{number:02}.flac", tracknumber=str(number), title=title)
+        wrong_order = ["Mein Herz Brennt", "Sonne", "Ich Will", "Links 2 3 4"]
+        found = {"artist": "Rammstein", "title": "Mutter Maxi-Single", "year": "2002",
+                 "tracklist": [{"position": str(i), "title": title}
+                               for i, title in enumerate(wrong_order, 1)]}
+        with mock.patch.object(discogs, "fetch_album", return_value=found):
+            result = library._plan_title(album, library.album_audio_files(album), check_all=True)
+        self.assertEqual((result["new_album"], result["new_year"], result["source"]),
+                         ("Mutter", "2001", "local"))
+        self.assertIn("слабо совпадает", result["note"])
 
     def test_instrumentals_keep_their_title_and_editions_take_the_masters(self):
         details = {

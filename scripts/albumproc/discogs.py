@@ -144,13 +144,34 @@ def _release_is_audio(release: dict) -> bool:
     return not any(word in formats for word in ("dvd", "blu-ray", "video", "vhs", "laserdisc"))
 
 
-def _tracklist_score(local_titles: list[str], release: dict) -> float:
+def tracklist_score(local_titles: list[str], tracklist: list[dict]) -> float:
     """Score overlap and order, so a shuffled edition cannot win on its set alone."""
-    remote = [t.get("title", "") for t in release.get("tracklist", [])
-              if t.get("type_", "track") == "track" and t.get("title")]
+    overlap, ordered = tracklist_agreement(local_titles, tracklist)
+    return 0.4 * overlap + 0.6 * ordered
+
+
+def tracklist_agreement(local_titles: list[str], tracklist: list[dict]) -> tuple[float, float]:
+    """Return unordered overlap and ordered LCS agreement, each in 0..1."""
+    entries = [t for t in tracklist if t.get("type_", "track") == "track" and t.get("title")]
+    remote = [t["title"] for t in entries]
     local = [t for t in local_titles if t]
     if not local or not remote:
-        return 0.0
+        return 0.0, 0.0
+
+    # API order is not guaranteed. Sort complete numeric/disc or vinyl-side
+    # positions before measuring sequence agreement.
+    positions = [t.get("position", "").strip() for t in entries]
+    side_positions = [re.fullmatch(r"([A-Z]+)(\d+)", p, re.IGNORECASE) for p in positions]
+    if all(side_positions):
+        remote = [title for _, title in sorted(
+            ( (m.group(1).upper(), int(m.group(2))), t["title"] )
+            for m, t in zip(side_positions, entries))]
+    else:
+        numeric_positions = [_position(p) for p in positions]
+        if all(track is not None for _, track in numeric_positions):
+            remote = [title for _, title in sorted(
+                ((position, t["title"]) for position, t in zip(numeric_positions, entries)),
+                key=lambda item: item[0])]
     hits = sum(any(title_similarity(a, b) >= TITLE_MIN_SIMILARITY for b in remote) for a in local)
     precision = hits / len(local)
     recall = sum(any(title_similarity(b, a) >= TITLE_MIN_SIMILARITY for a in local) for b in remote) / len(remote)
@@ -169,8 +190,8 @@ def _tracklist_score(local_titles: list[str], release: dict) -> float:
             else:
                 rows[index] = max(rows[index], rows[index - 1])
             previous = saved
-    ordered = rows[-1] / max(len(local), len(remote))
-    return 0.7 * overlap + 0.3 * ordered
+    ordered = rows[-1] / min(len(local), len(remote))
+    return overlap, ordered
 
 
 def _track_entries(release: dict) -> list[dict]:
@@ -284,7 +305,7 @@ def fetch_album(artist: Optional[str], raw_title: str, *, diagnostics: Optional[
                                                           for x in ("cd", "file")) else 1,
                                            0 if "album" in v.get("format", "").casefold() else 1))
             if _release_is_audio(release):
-                best_score = _tracklist_score(track_titles, release)
+                best_score = tracklist_score(track_titles, release.get("tracklist", []))
             else:
                 # Never fall back to a video key release when no audio edition
                 # could be fetched; keep the master identity and an empty list.
@@ -293,7 +314,7 @@ def fetch_album(artist: Optional[str], raw_title: str, *, diagnostics: Optional[
                 if str(version.get("id")) == str(release.get("id")):
                     continue
                 candidate = api_get(f"{_API}/releases/{version['id']}") or {}
-                score = _tracklist_score(track_titles, candidate)
+                score = tracklist_score(track_titles, candidate.get("tracklist", []))
                 if score > best_score:
                     best_score, track_release = score, candidate
 
