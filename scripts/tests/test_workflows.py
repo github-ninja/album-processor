@@ -366,8 +366,10 @@ class FixLibrary(TempLibraryCase):
                       artist="Test Artist", albumartist="Test Artist", album="Test Album",
                       date="2000", genre="Electronic", releasetype="album")
         found = {"artist": "Test Artist", "title": "Test Album", "year": "2000",
-                 "tracklist": [{"position": "1", "title": "Right One"},
-                               {"position": "2", "title": "Right Two"}]}
+                 # The API result order is intentionally different from
+                 # the explicit track positions.
+                 "tracklist": [{"position": "2", "title": "Right Two"},
+                               {"position": "1", "title": "Right One"}]}
         with mock.patch.object(library, "library_album_dirs", return_value=[album]), \
                 mock.patch.object(discogs, "fetch_album", return_value=found):
             plan = library.plan_library_fixes(check_all=True)

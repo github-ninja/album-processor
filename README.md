@@ -139,8 +139,9 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   artist spelling across the library, covers, audio format, missing ReplayGain
   and release types, duplicates (the same album under another year or case).
 - `/fixlibrary all` also re-checks every album title and, when the matched
-  Discogs release has a complete tracklist matching the library, canonicalises
-  track titles and filenames. Partial or mismatched tracklists are left alone.
+  Discogs release has a complete tracklist with unique numeric positions matching
+  the library, canonicalises track titles and filenames by track number. Partial,
+  ambiguous or mismatched tracklists are left alone.
 
 **Safety**
 - Imports run on a private copy in `music/.album_processor/work/`. Downloads stay

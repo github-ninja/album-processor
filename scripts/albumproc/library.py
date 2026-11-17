@@ -212,7 +212,7 @@ def _plan_tag_fixes(album_dir: Path, files: list[Path], genres: dict[str, str],
                     artists: dict[str, str], fill_genre: Optional[str],
                     tracklist: Optional[list[dict]] = None,
                     release_types: Optional[list[str]] = None,
-                    canonical_titles: bool = False) -> list[list]:
+                    canonical_tracklist: Optional[list[dict]] = None) -> list[list]:
     """
     Per-field tag corrections: [[relative file, field, old values, new values], …]
     (an empty new value list removes the field).  With *release_types* the
@@ -225,29 +225,29 @@ def _plan_tag_fixes(album_dir: Path, files: list[Path], genres: dict[str, str],
               if f.suffix.lower() == ".flac" or audioformat.needs_conversion(f)}
     album_artists = {tuple(current.get("artist", [])) for current in current_by_file.values()}
 
-    # Only replace titles during the explicit full Discogs check, and only
-    # when every local track maps cleanly to one entry in the matched release.
+    # Canonicalise only in the explicit full check, and only when every local
+    # track maps uniquely by its numeric Discogs position. Never infer order
+    # from list order: vinyl sides, hidden tracks and edition variants differ.
     canonical_by_file: dict[Path, str] = {}
-    if canonical_titles and tracklist and len(tracklist) == len(files):
-        ordered = []
+    if canonical_tracklist and len(canonical_tracklist) == len(files):
+        mapped = []
         for f in files:
             tags = read_tags(f)
             number = tags["track_number"]
             if not number.isdigit():
-                ordered = []
+                mapped = []
                 break
-            ordered.append((_disc_of(f, album_dir), int(number), f))
-        ordered.sort(key=lambda item: (item[0], item[1], str(item[2])))
-        positions = [(disc, number) for disc, number, _ in ordered]
-        sequential = all(
-            [number for track_disc, number in positions if track_disc == disc]
-            == list(range(1, sum(track_disc == disc for track_disc, _ in positions) + 1))
-            for disc in {d for d, _ in positions}
-        )
-        if (len(ordered) == len(files) and len(set(positions)) == len(positions)
-                and sequential and all(track.get("title") for track in tracklist)):
-            canonical_by_file = {item[2]: tracklist[index]["title"]
-                                 for index, item in enumerate(ordered)}
+            index = discogs.tracklist_index_at_position(
+                canonical_tracklist, int(number), _disc_of(f, album_dir))
+            if index is None or not canonical_tracklist[index].get("title"):
+                mapped = []
+                break
+            mapped.append((f, index))
+        indices = [index for _, index in mapped]
+        if (len(mapped) == len(files) and len(set(indices)) == len(files)
+                and set(indices) == set(range(len(canonical_tracklist)))):
+            canonical_by_file = {f: canonical_tracklist[index]["title"]
+                                 for f, index in mapped}
 
     for f in files:
         if f not in current_by_file:
@@ -426,7 +426,7 @@ def plan_library_fixes(check_all: bool = False) -> list[dict]:
         files = album_audio_files(album_dir)
         artist = album_dir.parent.name
         title = _plan_title(album_dir, files, check_all)
-        tracklist = title.pop("_tracklist", None)
+        canonical_tracklist = title.pop("_tracklist", None)
 
         missing_genre = not any(read_tags(f)["genre"] for f in files)
         # Release type, compilation flag and remixers are filled in once, from Discogs
@@ -436,15 +436,15 @@ def plan_library_fixes(check_all: bool = False) -> list[dict]:
             found = discogs.fetch_album(artist, title["new_album"])
             if found and not artists_match(artist, found.get("artist", "")):
                 found = None
-        if found and found.get("tracklist"):
-            tracklist = found["tracklist"]
+        tracklist = found.get("tracklist") if found else None
         fill_genre = found.get("genre") if found and missing_genre else None
         album_artist = (read_tags(files[0])["album_artist"] or artist) if files else artist
         release_types = discogs.album_release_types(found.get("release_types", []) if found else [],
                                                     len(files), album_artist) if missing_type else None
 
         tag_fixes = _plan_tag_fixes(album_dir, files, genres, artists, fill_genre,
-                                    tracklist, release_types, canonical_titles=check_all)
+                                    tracklist, release_types,
+                                    canonical_tracklist=canonical_tracklist if check_all else None)
         cover = _plan_cover(album_dir, files, artist, title["new_album"])
         convert = [[str(f.relative_to(album_dir)), audioformat.describe_format(f)]
                    for f in files if audioformat.needs_conversion(f)]

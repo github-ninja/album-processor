@@ -389,6 +389,13 @@ def _position(position: str) -> tuple[int, Optional[int]]:
     return 1, int(digits) if digits else None
 
 
+def tracklist_index_at_position(tracklist: list[dict], track_num: int, disc: int = 1) -> Optional[int]:
+    """Unique tracklist index for an explicit numeric Discogs position, or None."""
+    matches = [i for i, entry in enumerate(tracklist)
+               if _position(entry.get("position", "")) == (disc, track_num)]
+    return matches[0] if len(matches) == 1 else None
+
+
 def resolve_track_title(tracklist: list[dict], track_num: int, fallback_index: int,
                         disc: int = 1) -> Optional[str]:
     """
