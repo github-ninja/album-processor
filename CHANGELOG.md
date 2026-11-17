@@ -8,8 +8,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - `/fixlibrary all` now canonicalises track titles and filenames from a matched
-  Discogs release by unique numeric track positions. Partial, ambiguous or
-  mismatched tracklists are not used to rewrite titles.
+  Discogs release by unique numeric positions or a complete sequential vinyl-side
+  tracklist. Partial, ambiguous or mismatched tracklists are not used to rewrite titles.
 
 ## [1.1.1] — 2026-11-03
 

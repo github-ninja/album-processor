@@ -78,6 +78,51 @@ def _disc_of(file_path: Path, album_dir: Path) -> int:
     return int(tagged) if tagged.isdigit() and int(tagged) > 0 else 1
 
 
+def _canonical_title_map(album_dir: Path, files: list[Path], tracklist: list[dict]) -> dict[Path, str]:
+    """Map a complete Discogs list to files by numeric positions or vinyl sides."""
+    if not tracklist or len(tracklist) != len(files):
+        return {}
+    local = []
+    for f in files:
+        number = read_tags(f)["track_number"]
+        if not number.isdigit():
+            return {}
+        local.append((_disc_of(f, album_dir), int(number), f))
+    local.sort(key=lambda item: (item[0], item[1], str(item[2])))
+    local_positions = [(disc, number) for disc, number, _ in local]
+    if len(set(local_positions)) != len(files):
+        return {}
+
+    exact = [discogs.tracklist_index_at_position(tracklist, number, disc)
+             for disc, number, _ in local]
+    if (all(index is not None for index in exact) and len(set(exact)) == len(files)
+            and set(exact) == set(range(len(tracklist)))
+            and all(tracklist[index].get("title") for index in exact)):
+        return {item[2]: tracklist[index]["title"] for item, index in zip(local, exact)}
+
+    # Discogs uses A1/B1 for vinyl sides. Local files use sequential track
+    # numbers, so derive their order from the side and track coordinates.
+    if len({disc for disc, _, _ in local}) != 1 or [n for _, n, _ in local] != list(range(1, len(files) + 1)):
+        return {}
+    sides = []
+    for index, entry in enumerate(tracklist):
+        match = re.fullmatch(r"([A-Z])(\d+)", entry.get("position", "").strip(), re.IGNORECASE)
+        if not match or not entry.get("title"):
+            return {}
+        sides.append((match.group(1).upper(), int(match.group(2)), index))
+    side_names = sorted({side for side, _, _ in sides})
+    if side_names != [chr(ord("A") + i) for i in range(len(side_names))]:
+        return {}
+    ordered_sides = sorted(sides)
+    if len({(side, number) for side, number, _ in sides}) != len(sides):
+        return {}
+    for side in side_names:
+        numbers = [number for current, number, _ in ordered_sides if current == side]
+        if numbers != list(range(1, len(numbers) + 1)):
+            return {}
+    return {item[2]: tracklist[ordered_sides[i][2]]["title"] for i, item in enumerate(local)}
+
+
 def _disc_folder(file_path: Path, album_dir: Path, discs: list[int]) -> Path:
     """Relative folder a track belongs in: "CD<n>" on a multi-disc album, else the album itself."""
     return Path(f"CD{_disc_of(file_path, album_dir)}") if len(discs) > 1 else Path(".")
@@ -225,29 +270,9 @@ def _plan_tag_fixes(album_dir: Path, files: list[Path], genres: dict[str, str],
               if f.suffix.lower() == ".flac" or audioformat.needs_conversion(f)}
     album_artists = {tuple(current.get("artist", [])) for current in current_by_file.values()}
 
-    # Canonicalise only in the explicit full check, and only when every local
-    # track maps uniquely by its numeric Discogs position. Never infer order
-    # from list order: vinyl sides, hidden tracks and edition variants differ.
-    canonical_by_file: dict[Path, str] = {}
-    if canonical_tracklist and len(canonical_tracklist) == len(files):
-        mapped = []
-        for f in files:
-            tags = read_tags(f)
-            number = tags["track_number"]
-            if not number.isdigit():
-                mapped = []
-                break
-            index = discogs.tracklist_index_at_position(
-                canonical_tracklist, int(number), _disc_of(f, album_dir))
-            if index is None or not canonical_tracklist[index].get("title"):
-                mapped = []
-                break
-            mapped.append((f, index))
-        indices = [index for _, index in mapped]
-        if (len(mapped) == len(files) and len(set(indices)) == len(files)
-                and set(indices) == set(range(len(canonical_tracklist)))):
-            canonical_by_file = {f: canonical_tracklist[index]["title"]
-                                 for f, index in mapped}
+    # Only the explicit full Discogs check supplies canonical_tracklist.
+    canonical_by_file = (_canonical_title_map(album_dir, files, canonical_tracklist)
+                         if canonical_tracklist else {})
 
     for f in files:
         if f not in current_by_file:

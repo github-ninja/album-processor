@@ -393,6 +393,25 @@ class FixLibrary(TempLibraryCase):
 
         self.assertFalse(any(field == "title" for _, field, _, _ in plan[0]["tag_fixes"]))
 
+    def test_full_discogs_check_maps_vinyl_sides_to_sequential_library_tracks(self):
+        album = self.music / "Test Artist" / "2000 - Vinyl Album"
+        for number, title in enumerate(("Wrong One", "Wrong Two", "Wrong Three"), 1):
+            make_flac(album / f"{number:02}.flac", tracknumber=str(number), title=title,
+                      artist="Test Artist", albumartist="Test Artist", album="Vinyl Album",
+                      date="2000", genre="Electronic", releasetype="album")
+        found = {"artist": "Test Artist", "title": "Vinyl Album", "year": "2000",
+                 "tracklist": [{"position": "B1", "title": "Right Three"},
+                               {"position": "A2", "title": "Right Two"},
+                               {"position": "A1", "title": "Right One"}]}
+        with mock.patch.object(library, "library_album_dirs", return_value=[album]), \
+                mock.patch.object(discogs, "fetch_album", return_value=found):
+            plan = library.plan_library_fixes(check_all=True)
+
+        title_fixes = {rel: new for rel, field, _, new in plan[0]["tag_fixes"] if field == "title"}
+        self.assertEqual(title_fixes, {
+            "01.flac": ["Right One"], "02.flac": ["Right Two"], "03.flac": ["Right Three"],
+        })
+
 
 class ReleaseTypeAndRemixers(TempLibraryCase):
     def test_download_gets_release_type_and_remixers(self):
