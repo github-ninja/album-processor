@@ -49,7 +49,9 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   ("Trentemoller" = "Trentemøller"), including artist prefixes in album folders;
   tags and file names keep the spelling from Discogs.
 - Guards against wrong matches: a release whose tracklist does not overlap
-  the files (a namesake band's album) is rejected.
+  the files (a namesake band's album) is rejected. Discogs master data defines
+  album identity; a matching audio edition supplies the tracklist, so a DVD
+  key release cannot rename an audio album or win on one-sided track overlap.
 - Another version of an album — *Instrumentals*, *Remixes* — stays a separate
   album even when Discogs files it under the original's master.
 - Cleans messy folder names: `2013-09-02 - I Am Legion [GB - DVSNCD003] (FLAC 24-96)` → `I Am Legion`.
@@ -138,8 +140,8 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
 - Fixes names, tag hygiene (invisible characters, genre spelling, totals),
   artist spelling across the library, covers, audio format, missing ReplayGain
   and release types, duplicates (the same album under another year or case).
-- `/fixlibrary all` also re-checks every album title and, when the matched
-  Discogs release has a complete tracklist with unique numeric positions—or a
+- `/fixlibrary all` also re-checks every album title and, when the matching
+  Discogs audio edition has a complete tracklist with unique numeric positions—or a
   complete, sequential vinyl-side order—matching the library, canonicalises track
   titles and filenames by track number. Partial or ambiguous tracklists are left
   alone.

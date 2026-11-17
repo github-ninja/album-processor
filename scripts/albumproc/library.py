@@ -234,7 +234,8 @@ def _plan_title(album_dir: Path, files: list[Path], check_all: bool) -> dict:
     found = None
     # Tags usually carry the exact title (with ":" "/" "?"), so try them first
     for query in dict.fromkeys(q for q in (old_album.strip(), folder_title) if q):
-        found = discogs.fetch_album(artist, query)
+        found = discogs.fetch_album(artist, query,
+                                   track_titles=[read_tags(f)["title"] for f in files])
         if found:
             break
     if found and found.get("artist") and not artists_match(artist, found["artist"]):
@@ -458,7 +459,8 @@ def plan_library_fixes(check_all: bool = False) -> list[dict]:
         missing_type = any("releasetype" not in _flac_values(f) for f in files)
         found = None
         if missing_genre or missing_type or any(_credit_markers(f) for f in files):
-            found = discogs.fetch_album(artist, title["new_album"])
+            found = discogs.fetch_album(artist, title["new_album"],
+                                        track_titles=[read_tags(f)["title"] for f in files])
             if found and not artists_match(artist, found.get("artist", "")):
                 found = None
         tracklist = found.get("tracklist") if found else None

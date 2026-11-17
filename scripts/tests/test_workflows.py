@@ -294,7 +294,7 @@ class DiscogsTitleTypo(TempLibraryCase):
             found = discogs.fetch_album("Catching Flies", "Beats & Peaces II")
         self.assertEqual((found["title"], found["artist"], found["year"]),
                          ("Beats & Pieces II", "Catching Flies", "2026"))
-        self.assertEqual(len(searches), 3)
+        self.assertEqual(len(searches), 5)  # two master-first searches, then release fallback
 
 
 class DiscogsVersionOfAnAlbum(TempLibraryCase):
@@ -309,6 +309,47 @@ class DiscogsVersionOfAnAlbum(TempLibraryCase):
             with mock.patch.object(discogs, "search", return_value=results), \
                     mock.patch.object(discogs, "api_get", side_effect=lambda u, **kw: details.get(u, {})):
                 self.assertEqual(discogs.fetch_album("I Am Legion", details[url]["title"])["title"], expected)
+
+    def test_master_identity_uses_matching_audio_version_not_its_dvd_key_release(self):
+        songs = ["Porcelain", "Why Does My Heart Feel So Bad?", "Natural Blues"]
+        dvd_tracks = [{"position": str(i), "title": title} for i, title in enumerate(songs, 1)]
+        dvd_tracks += [{"position": str(i), "title": f"Video extra {i}"} for i in range(4, 35)]
+        cd_tracks = [{"position": str(i), "title": title} for i, title in enumerate(songs, 1)]
+        details = {
+            "dvd": {"id": 10, "master_id": 7, "title": "Play (The DVD)", "year": 2001,
+                    "artists": [{"name": "Wrong DVD Credit"}], "formats": [{"name": "DVD"}],
+                    "tracklist": dvd_tracks},
+            f"{discogs._API}/masters/7": {
+                "title": "Play", "year": 1999, "artists": [{"name": "Moby"}],
+                "genres": ["Electronic"], "styles": ["Downtempo"]},
+            f"{discogs._API}/masters/7/versions": {
+                "versions": [{"id": 10, "format": "DVD, Video", "major_formats": ["DVD"]},
+                             {"id": 11, "format": "CD, Album", "major_formats": ["CD"]}]},
+            f"{discogs._API}/releases/11": {
+                "id": 11, "title": "Play", "year": 1999, "artists": [{"name": "Moby"}],
+                "formats": [{"name": "CD", "descriptions": ["Album"]}], "tracklist": cd_tracks},
+        }
+        def search(**params):
+            if params.get("type") == "master":
+                return [{"id": 7, "title": "Moby - Play", "resource_url": f"{discogs._API}/masters/7"}]
+            return [{"title": "Moby - Play (The DVD)", "master_id": 7,
+                     "resource_url": "dvd", "year": "2001"}]
+
+        with mock.patch.object(discogs, "search", side_effect=search), \
+                mock.patch.object(discogs, "api_get", side_effect=lambda url, **kw: details.get(url, {})):
+            found = discogs.fetch_album("Moby", "Play", track_titles=songs)
+        self.assertEqual((found["title"], found["year"], found["artist"]), ("Play", "1999", "Moby"))
+        self.assertEqual(found["release_id"], 11)
+        self.assertEqual([t["title"] for t in found["tracklist"]], songs)
+
+    def test_expanded_dvd_tracklist_does_not_match_an_audio_album(self):
+        album = self.downloads / "Moby" / "Play"
+        songs = ["Porcelain", "Why Does My Heart Feel So Bad?", "Natural Blues"]
+        for number, title in enumerate(songs, 1):
+            make_flac(album / f"{number:02}.flac", tracknumber=str(number), title=title)
+        dvd_tracks = [{"title": title} for title in songs]
+        dvd_tracks += [{"title": f"Video extra {i}"} for i in range(31)]
+        self.assertFalse(pipeline._tracklist_matches(album, dvd_tracks))
 
 
 class FixLibrary(TempLibraryCase):

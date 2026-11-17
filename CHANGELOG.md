@@ -7,6 +7,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Discogs identification now searches the master first for album identity, then
+  chooses a matching audio edition for its tracklist. DVD/video editions cannot
+  win from one-sided track overlap; `/fixlibrary all` uses the same local-track-aware lookup.
 - `/fixlibrary all` now canonicalises track titles and filenames from a matched
   Discogs release by unique numeric positions or a complete sequential vinyl-side
   tracklist. Partial, ambiguous or mismatched tracklists are not used to rewrite titles.

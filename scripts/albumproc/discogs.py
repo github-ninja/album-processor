@@ -133,7 +133,41 @@ def _pick_result(results: list[dict], album_title: str) -> Optional[dict]:
     return best
 
 
-def fetch_album(artist: Optional[str], raw_title: str, *, diagnostics: Optional[dict] = None) -> Optional[dict]:
+def _audio_version(version: dict) -> bool:
+    """Reject video editions before looking at their tracklists."""
+    formats = " ".join([version.get("format", ""), *(version.get("major_formats") or [])]).casefold()
+    return not any(word in formats for word in ("dvd", "blu-ray", "video", "vhs", "laserdisc"))
+
+
+def _release_is_audio(release: dict) -> bool:
+    formats = " ".join(f.get("name", "") for f in release.get("formats", [])).casefold()
+    return not any(word in formats for word in ("dvd", "blu-ray", "video", "vhs", "laserdisc"))
+
+
+def _tracklist_score(local_titles: list[str], release: dict) -> float:
+    """F1 overlap: an expanded video/DVD list cannot win on recall alone."""
+    remote = [t.get("title", "") for t in release.get("tracklist", [])
+              if t.get("type_", "track") == "track" and t.get("title")]
+    local = [t for t in local_titles if t]
+    if not local or not remote:
+        return 0.0
+    hits = sum(any(title_similarity(a, b) >= TITLE_MIN_SIMILARITY for b in remote) for a in local)
+    precision = hits / len(local)
+    recall = sum(any(title_similarity(b, a) >= TITLE_MIN_SIMILARITY for a in local) for b in remote) / len(remote)
+    return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+
+
+def _track_entries(release: dict) -> list[dict]:
+    return [
+        {"position": t.get("position", ""), "title": t.get("title", ""),
+         "artists": join_artists(t.get("artists", [])),
+         "featuring": _credited(t, "Featuring"), "remixers": _credited(t, "Remix")}
+        for t in release.get("tracklist", []) if t.get("type_", "track") == "track"
+    ]
+
+
+def fetch_album(artist: Optional[str], raw_title: str, *, diagnostics: Optional[dict] = None,
+                track_titles: Optional[list[str]] = None) -> Optional[dict]:
     """
     Look up an album by *artist* and a (possibly messy) folder name or title.
 
@@ -162,6 +196,21 @@ def fetch_album(artist: Optional[str], raw_title: str, *, diagnostics: Optional[
         # all of the artist's releases, matched by title similarity
         searches.append({"artist": artist, "per_page": 100})
 
+    # Establish album identity from the master first. A release search alone can
+    # prefer a DVD/remaster and leak that edition's title into the library.
+    master_match = None
+    try:
+        for params in searches[:2]:
+            master_match = _pick_result(search(**{"type": "master", "per_page": 10, **params}), cleaned)
+            if master_match and master_match.get("id"):
+                break
+            master_match = None
+    except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
+        log.warning("⚠️  Discogs master search unavailable: %s", exc)
+        if diagnostics is not None:
+            diagnostics['status'] = 'unavailable'
+        return None
+
     try:
         match, results = None, []
         for params in searches:
@@ -179,10 +228,11 @@ def fetch_album(artist: Optional[str], raw_title: str, *, diagnostics: Optional[
         title = clean_title(release.get("title", ""))
         year = release.get("year") or ""
 
-        master_id = release.get("master_id")
+        master_id = (master_match or {}).get("id") or release.get("master_id")
+        master = {}
         if master_id:
             log.info("  📥 Fetching master release…")
-            master = api_get(f"{_API}/masters/{master_id}") or {}
+            master = api_get((master_match or {}).get("resource_url") or f"{_API}/masters/{master_id}") or {}
             master_title = clean_title(master.get("title", ""))
             if master_title and title_similarity(master_title, title) < TITLE_MIN_SIMILARITY:
                 # Mis-linked master in Discogs data — trust the release itself
@@ -203,25 +253,40 @@ def fetch_album(artist: Optional[str], raw_title: str, *, diagnostics: Optional[
                     years.append(int(master["year"]))
                 year = min(years) if years else year
 
+        track_release = release
+        if master_id and track_titles:
+            versions = api_get(f"{_API}/masters/{master_id}/versions",
+                               params={"per_page": 100, "page": 1}) or {}
+            candidates = [v for v in versions.get("versions", []) if _audio_version(v) and v.get("id")]
+            candidates.sort(key=lambda v: (0 if any(x in " ".join(v.get("major_formats") or []).casefold()
+                                                          for x in ("cd", "file")) else 1,
+                                           0 if "album" in v.get("format", "").casefold() else 1))
+            if _release_is_audio(release):
+                best_score = _tracklist_score(track_titles, release)
+            else:
+                # Never fall back to a video key release when no audio edition
+                # could be fetched; keep the master identity and an empty list.
+                track_release, best_score = {"id": release.get("id")}, -1.0
+            for version in candidates[:5]:
+                if str(version.get("id")) == str(release.get("id")):
+                    continue
+                candidate = api_get(f"{_API}/releases/{version['id']}") or {}
+                score = _tracklist_score(track_titles, candidate)
+                if score > best_score:
+                    best_score, track_release = score, candidate
+
         if diagnostics is not None:
             diagnostics['status'] = 'matched'
         return {
-            "release_id": release.get("id"),
+            "release_id": track_release.get("id"),
             "master_id": master_id,
             "title": title,
-            "artist": join_artists(release.get("artists", [])),
+            "artist": join_artists(master.get("artists") or release.get("artists", [])),
             "year": str(year) if year else "",
-            "genre": "; ".join(release.get("styles") or release.get("genres") or []),
-            "release_types": release_types(release),
-            # Heading / index rows are not tracks
-            "tracklist": [
-                {"position": t.get("position", ""), "title": t.get("title", ""),
-                 "artists": join_artists(t.get("artists", [])),
-                 "featuring": _credited(t, "Featuring"),
-                 "remixers": _credited(t, "Remix")}
-                for t in release.get("tracklist", [])
-                if t.get("type_", "track") == "track"
-            ],
+            "genre": "; ".join(master.get("styles") or master.get("genres")
+                                  or track_release.get("styles") or track_release.get("genres") or []),
+            "release_types": release_types(track_release),
+            "tracklist": _track_entries(track_release),
         }
     except requests.Timeout:
         log.warning("⚠️  Discogs request timed out.")
@@ -234,9 +299,9 @@ def fetch_album(artist: Optional[str], raw_title: str, *, diagnostics: Optional[
     return None
 
 
-def lookup_album(artist: Optional[str], title: str) -> tuple[Optional[dict], str]:
+def lookup_album(artist: Optional[str], title: str, *, track_titles: Optional[list[str]] = None) -> tuple[Optional[dict], str]:
     diagnostics = {}
-    album = fetch_album(artist, title, diagnostics=diagnostics)
+    album = fetch_album(artist, title, diagnostics=diagnostics, track_titles=track_titles)
     return album, diagnostics.get('status', 'matched' if album else 'unmatched')
 
 

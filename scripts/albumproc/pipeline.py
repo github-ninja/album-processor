@@ -179,7 +179,11 @@ def _tracklist_matches(album_path: Path, tracklist: list[dict]) -> bool:
         found = sum(any(title_similarity(a, b) >= TITLE_MIN_SIMILARITY for b in pool) for a in titles)
         return found / len(titles)
 
-    return max(share(local, remote), share(remote, local)) >= 0.5
+    local_share, remote_share = share(local, remote), share(remote, local)
+    # Both sets must describe substantially the same album. max() let an
+    # expanded DVD pass merely because its long list contained the album tracks.
+    return (2 * local_share * remote_share / (local_share + remote_share)
+            if local_share + remote_share else 0) >= 0.5
 
 
 def resolve_album_info(candidate: AlbumCandidate) -> Optional[AlbumInfo]:
@@ -188,7 +192,8 @@ def resolve_album_info(candidate: AlbumCandidate) -> Optional[AlbumInfo]:
     artist = candidate.artist or _tagged_album_artist(album_path)
 
     title = _album_title(album_path, artist)
-    found, lookup_status = discogs.lookup_album(artist or None, title)
+    local_titles = [read_tags(f)["title"] for f in album_audio_files(album_path)]
+    found, lookup_status = discogs.lookup_album(artist or None, title, track_titles=local_titles)
     if found and not _tracklist_matches(album_path, found.get("tracklist", [])):
         # Same-named album by a namesake artist: "Nirvana" (1990) by the 60s band
         log.info("  ℹ️  Discogs release %r has other tracks — ignored.", found.get("title"))
