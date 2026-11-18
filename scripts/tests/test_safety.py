@@ -2,6 +2,7 @@
 import asyncio
 import json
 import unittest
+from base64 import b64encode
 from unittest import mock
 
 import numpy as np
@@ -256,20 +257,20 @@ class LibrarySafety(TempLibraryCase):
         with mock.patch.object(covers, 'fetch_deezer_cover', return_value=approved):
             cover = library._plan_cover(album, [track], 'A', 'Album')
         self.assertEqual(cover['origin'], 'deezer')
-        entry = self.entry(album, manifest=jobs.manifest(album), cover=cover)
-
-        for reply in (different, None):
-            with self.subTest(has_reply=reply is not None), \
-                    mock.patch.object(covers, 'fetch_deezer_cover', return_value=reply):
-                self.assertEqual(library.apply_library_fixes([entry]), 1)
-                self.assertEqual(track.read_bytes(), before)
-                self.assertFalse(cover_path.exists())
-                self.assertFalse(list(config.state_dir().glob('replaced/**/*.*')))
-
-        with mock.patch.object(covers, 'fetch_deezer_cover', return_value=approved):
+        entry = json.loads(json.dumps(self.entry(album, manifest=jobs.manifest(album), cover=cover)))
+        tampered = dict(entry, cover={**cover, 'jpeg': b64encode(different).decode('ascii')})
+        with mock.patch.object(covers, 'fetch_deezer_cover', side_effect=AssertionError('unexpected request')) as fetch:
+            self.assertEqual(library.apply_library_fixes([tampered]), 1)
+            self.assertEqual(track.read_bytes(), before)
+            self.assertFalse(cover_path.exists())
+            self.assertFalse(list(config.state_dir().glob('replaced/**/*.*')))
             self.assertEqual(library.apply_library_fixes([entry]), 0)
+            fetch.assert_not_called()
         self.assertEqual(cover_path.read_bytes(), covers.normalize_cover(approved))
         self.assertEqual(tags.get_embedded_picture(track), cover_path.read_bytes())
+        records = [json.loads(line) for line in (config.state_dir() / 'fixes.jsonl').read_text().splitlines()]
+        self.assertTrue(records)
+        self.assertTrue(all('jpeg' not in record['cover'] for record in records))
 
     def test_maintenance_recovers_on_both_sides_of_publication(self):
         album = self.album()

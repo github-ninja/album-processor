@@ -94,16 +94,22 @@ def strip_disambiguation(name: str) -> str:
     return _DISAMBIGUATION_RE.sub("", name).strip()
 
 
-def join_artists(artists: list[dict]) -> str:
+def _artist_name(entry: dict, *, as_credited: bool = False) -> str:
+    if as_credited and (variation := clean_text(entry.get("anv") or "")):
+        return variation
+    return strip_disambiguation(entry.get("name") or "")
+
+
+def join_artists(artists: list[dict], *, as_credited: bool = False) -> str:
     """
     "; "-joined artist names from a Discogs ``artists`` list.  Discogs' own
     join tokens ("&", "feat.") are dropped — the tags keep one value per
     artist — and disambiguation suffixes ("New Order (2)") are stripped.
-    Repeated entries (some releases list the same artist twice) are kept once.
+    Repeated names are kept once. Track credits use the edition's name variation.
     """
     names: dict[str, str] = {}
     for entry in artists:
-        name = strip_disambiguation(entry.get("name", ""))
+        name = _artist_name(entry, as_credited=as_credited)
         if name:
             names.setdefault(name.lower(), name)
     return "; ".join(names.values())
@@ -214,7 +220,7 @@ def _track_entries(release: dict) -> list[dict]:
     return [
         {"position": t.get("position") or "", "title": t.get("title") or "",
          "duration": t.get("duration", ""),
-         "artists": join_artists((t.get("artists") or [])),
+         "artists": join_artists(t.get("artists") or [], as_credited=True),
          "featuring": _credited(t, "Featuring"), "remixers": _credited(t, "Remix")}
         for t in (release.get("tracklist") or []) if t.get("type_", "track") == "track"
     ]
@@ -514,8 +520,9 @@ def release_types(release: dict) -> list[str]:
 
 def _credited(track: dict, role: str) -> list[str]:
     """Names credited on a Discogs track with *role* ("Featuring", "Remix" — also "Remix [Additional]")."""
-    return [strip_disambiguation(e.get("name", "")) for e in (track.get("extraartists") or [])
-            if role.lower() in e.get("role", "").lower() and e.get("name")]
+    return [name for entry in (track.get("extraartists") or [])
+            if role.casefold() in (entry.get("role") or "").casefold()
+            and (name := _artist_name(entry))]
 
 
 def _position(position: str) -> tuple[int, int | None]:

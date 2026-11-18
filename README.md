@@ -155,6 +155,7 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   complete, sequential vinyl-side order—matching the library, canonicalises track
   titles and filenames by track number. The complete position map must also agree
   with established track titles, version qualifiers and available durations.
+  Track performers use the edition's credited name when Discogs supplies one.
   Spelling changes require supporting timings and agreement with the master.
   A spelling change repeated across distinct tracks signals a different transcription.
   Existing title styling is preserved when Discogs only adds capitals, spells
@@ -177,9 +178,9 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   failed rename batches roll back. CUE splitting rejects duplicate tracks and
   leaves the source image intact if writing or tagging fails.
 - Library plans reject stale metadata, missing tracks, path escapes and existing
-  destination folders before applying changes. A changed or unavailable approved
-  cover requires a new plan for the album. Lossless conversion and renaming
-  are handled together on a private copy. The entire original goes to the archive
+  destination folders before applying changes. The plan stores the selected
+  Deezer cover so application can use the exact image offline. Lossless conversion
+  and renaming are handled together on a private copy. The entire original goes to the archive
   on success. Totals reflect the actual tracks and discs.
 - An unreachable downloader is treated as potentially busy. Download completion
   is checked against distinct files actually present, not only the task's file list.

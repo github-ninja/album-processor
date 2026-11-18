@@ -29,6 +29,7 @@ import logging
 import re
 import shutil
 import unicodedata
+from base64 import b64decode, b64encode
 from collections import Counter, defaultdict
 from hashlib import sha256
 from pathlib import Path
@@ -143,6 +144,10 @@ def _catalogue_title(local: str, remote: str) -> str:
     if "&" not in remote:
         established = re.sub(r"\s+&\s+", " and ", established)
     candidate = _title_typography(remote)
+    if established.casefold() == candidate.casefold() and any(
+            old.isupper() and len(old) > 1 and new.istitle()
+            for old, new in zip(established.split(), candidate.split())):
+        return local
     if len(established) == len(candidate) and all(
             old == new or (new.isupper() and old.casefold() == new.casefold())
             for old, new in zip(established, candidate)):
@@ -480,7 +485,7 @@ def _plan_cover(album_dir: Path, files: list[Path], artist: str, album: str) -> 
     if not (rewrite or stray or stale or copies):
         return None
     final_size = covers.image_size(final)
-    return {
+    plan = {
         "origin": origin,
         "sha256": sha256(final).hexdigest(),
         "from_size": list(size) if size else None,
@@ -490,6 +495,9 @@ def _plan_cover(album_dir: Path, files: list[Path], artist: str, album: str) -> 
         "disc_copies": len(copies),
         "remove": stray,
     }
+    if origin == "deezer":
+        plan["jpeg"] = b64encode(final).decode("ascii")
+    return plan
 
 
 def _track_signature(album_dir: Path) -> tuple:
@@ -677,11 +685,18 @@ def _apply_tag_fixes(album_dir: Path, fixes: list[list]) -> int:
     return len(by_file)
 
 
-def _apply_cover(album_dir: Path, files: list[Path], artist: str, album: str,
-                 expected_digest: str | None) -> Optional[str]:
+def _apply_cover(album_dir: Path, files: list[Path], artist: str, album: str, cover: dict) -> Optional[str]:
     """Apply the approved artwork to the staged album."""
-    final, origin, _ = covers.choose_cover(album_dir, files, artist, album)
-    if expected_digest is not None and (final is None or sha256(final).hexdigest() != expected_digest):
+    origin = cover["origin"]
+    expected_digest = cover.get("sha256")
+    if "jpeg" in cover:
+        final = b64decode(cover["jpeg"], validate=True)
+    elif expected_digest and origin == "local":
+        source = covers.current_cover(album_dir, files)
+        final = covers.normalize_cover(source) if source else None
+    else:
+        final, origin, _ = covers.choose_cover(album_dir, files, artist, album)
+    if expected_digest and (final is None or sha256(final).hexdigest() != expected_digest):
         raise ValueError("approved cover changed or became unavailable; build a new plan")
     if final is None:
         return None
@@ -779,7 +794,7 @@ def _apply_to_copy(work: Path, entry: dict, pairs: list) -> None:
     if entry.get("replaygain"):
         replaygain.tag_album(files)
     if cover := entry.get("cover"):
-        result = _apply_cover(work, files, entry["artist"], entry["new_album"], cover.get("sha256"))
+        result = _apply_cover(work, files, entry["artist"], entry["new_album"], cover)
         if result:
             log.info("  🖼️  %s", result)
 
@@ -787,8 +802,16 @@ def _apply_to_copy(work: Path, entry: dict, pairs: list) -> None:
     covers.copy_to_discs(work)
 
 
+def _maintenance_record(entry: dict) -> dict:
+    """Keep artwork bytes in the plan and the published album."""
+    if (cover := entry.get("cover")) and "jpeg" in cover:
+        return {**entry, "cover": {key: value for key, value in cover.items() if key != "jpeg"}}
+    return entry
+
+
 def _apply_entry(album_dir: Path, entry: dict) -> None:
     pairs = _check_entry(album_dir, entry)
+    record = _maintenance_record(entry)
     if entry.get("duplicate_of"):
         keep = Path(entry["duplicate_of"])
         _check_album_path(keep)
@@ -799,9 +822,9 @@ def _apply_entry(album_dir: Path, entry: dict) -> None:
             raise ValueError("the duplicate to keep changed after planning")
         archive = archive_path(album_dir)
         archive.parent.mkdir(parents=True, exist_ok=True)
-        journal({**entry, "status": "started", "archive": str(archive)})
+        journal({**record, "status": "started", "archive": str(archive)})
         safe_rename(album_dir, archive)
-        journal({**entry, "new_path": str(archive)})
+        journal({**record, "new_path": str(archive)})
         return
 
     new_artist = entry.get("new_artist_folder", entry["artist"])
@@ -830,12 +853,12 @@ def _apply_entry(album_dir: Path, entry: dict) -> None:
         raise RuntimeError("album changed during maintenance; publication cancelled")
 
     backups = [[str(album_dir), str(archive_path(album_dir))]]
-    step = {"entry": {key: value for key, value in entry.items() if key not in {"manifest", "duplicate_manifest"}},
+    step = {"entry": {key: value for key, value in record.items() if key not in {"manifest", "duplicate_manifest"}},
             "work": str(work), "target": str(target), "backups": backups,
             "prepared_manifest": jobs.manifest(work)}
     pending = _maintenance_dir() / "pending.json"
     write_json(pending, step)
-    journal({**entry, "status": "started", "archive": backups[0][1]})
+    journal({**record, "status": "started", "archive": backups[0][1]})
     publish_album(work, target, backups)
     recover_maintenance()
 
@@ -867,6 +890,6 @@ def apply_library_fixes(plan: list[dict]) -> int:
         except Exception as exc:
             recover_maintenance()
             log.error("  Failed: %s", exc)
-            journal({**entry, "status": "failed", "error": str(exc)})
+            journal({**_maintenance_record(entry), "status": "failed", "error": str(exc)})
             failed += 1
     return failed

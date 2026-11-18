@@ -39,10 +39,16 @@ Additional controlled cases cover two discs sharing track numbers, sequential vi
 
 References: [Warp's Plaid catalogue](https://plaid.warp.net/release/72583-plaid-spokes), [Deezer recording catalogue](https://www.deezer.com/album/302127), [FFmpeg EBU R128 filter](https://ffmpeg.org/ffmpeg-filters.html#ebur128), [PyAV frame API](https://pyav.basswood.io/docs/stable/api/frame.html), [Python filesystem semantics](https://docs.python.org/3.13/library/os.html#os.rename).
 
+## Full maintenance rehearsal
+
+The follow-up ran on the reviewed worker. The CLI read real albums from a read-only mount and stored its plan and lock in an isolated temporary directory. An authenticated capture provided reproducible Discogs answers across revisions. One live worker followed the service's rate-limit headers, and the replay used captured replies before sending a request. The release/master link and per-lookup reuse provide the same request savings on a fresh run.
+
+Independent checks included different editions of the same album, a title-case-only rename, and a catalogue transcription shared by a master and an edition that disagreed with the original CD sleeve. Preserving the established titles in these cases still allowed documented typos, credit corrections and first-release year corrections. The artwork regression verifies exact offline application and rejects changes to the stored JPEG before publication of a synthetic album.
+
 ## Verification limits
 
 - The public Deezer API returned 14 tracks for Daft Punk's *Discovery*. Catalog fixtures and application tests require no credentials.
-- Live Discogs requests timed out in this environment. Telegram, Gemini and deezer-downloader interactions were verified with controlled responses. The installed service and the owner's media were outside the test setup.
+- Earlier unauthenticated Discogs probes timed out. Authenticated Discogs and public Deezer worked in the maintenance rehearsal. Telegram, Gemini and deezer-downloader interactions were verified with controlled responses. All application tests used synthetic media.
 - Catalogue search is deliberately bounded by queries and candidate counts. Ambiguous metadata, incomplete catalogue entries and different masters with the same programme may still require manual review. The benchmark validates specific error cases, so a catalogue-wide precision or recall rate would require a larger labelled corpus.
 - Deezer completeness checks the album ID, file snapshot and expected distinct file count. Exact recording identity would require per-track evidence from the download provider.
 - Release notification IDs are written when the worker produces the report. A Telegram delivery failure after that point can require a manual catalogue check.

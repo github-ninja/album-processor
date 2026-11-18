@@ -16,8 +16,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Discogs release lookup follows the master link directly and uses master
   search as fallback. Maintenance reuses its confirmed result for titles,
   genres and credits. Video editions cannot win from one-sided track overlap.
-- Maintenance verifies the approved cover before publishing the album. A
-  changed or unavailable image requires a new plan.
+- Track performing artists use the name credited on the matched Discogs edition.
+- Maintenance stores the approved Deezer cover in the plan and applies it
+  offline after verifying the image digest.
 
 - Import records publication and archives before moving library albums, and can
   resume interrupted source cleanup. Approval checks the download and compared

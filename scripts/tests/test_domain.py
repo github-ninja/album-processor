@@ -13,6 +13,24 @@ from tests.test_releases import release
 
 
 class DiscogsDecisions(TempLibraryCase):
+    def test_track_credits_use_the_edition_artist_names(self):
+        performers = [{"name": "Dominic Angus", "anv": "Dom"}, {"name": "Ryme Tyme"}]
+        release = {"tracklist": [{"position": "14", "title": "Iceberg", "artists": performers}]}
+        track, = discogs._track_entries(release)
+        self.assertEqual(track["artists"], "Dom; Ryme Tyme")
+        self.assertEqual(discogs.join_artists(performers), "Dominic Angus; Ryme Tyme")
+
+    def test_featured_artist_variation_does_not_duplicate_a_credit(self):
+        release = {"tracklist": [{"position": "1", "title": "Mechanical Sunset", "extraartists": [
+            {"name": "Andrey Gusev", "anv": "Andrey G", "role": "Featuring"},
+        ]}]}
+        album = self.music / "Known Rebel" / "2011 - Hollow"
+        track = make_flac(album / "one.flac", title="Mechanical Sunset", tracknumber="1",
+                          artist=["Known Rebel", "Andrey Gusev"], albumartist="Known Rebel")
+        changes = library._plan_tag_fixes(album, [track], {}, {}, None,
+                                          canonical_tracklist=discogs._track_entries(release))
+        self.assertFalse(any(field == "artist" for _, field, _, _ in changes))
+
     def test_discogs_continues_after_wrong_first_hit(self):
         # Even Spring is on Plaid's Spokes. A same-titled entry with unrelated
         # tracks must not block the useful hit in the same search result.
@@ -144,6 +162,7 @@ class DiscogsDecisions(TempLibraryCase):
         for local, remote, expected in (
             ("ilanders", "Ilanders", "ilanders"),
             ("23Kid", "23kid", "23kid"),
+            ("GBFISYSIH", "Gbfisysih", "GBFISYSIH"),
             ("Sugar & Cream", "Sugar And Cream", "Sugar & Cream"),
             ("Requiem for CS70 and Strings", "Requiem for CS70 And Strings", "Requiem for CS70 and Strings"),
             ("Don't Stay", "Don´t Stay", "Don't Stay"),
