@@ -8,6 +8,15 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Library maintenance preserves established album punctuation during local
+  cleanup and requires a compatible ordered track programme before applying
+  another edition's titles or credits. Timings and the master guard spelling changes,
+  and standard Discogs capitalization alone leaves existing styling intact.
+- Discogs release lookup follows the master link directly and uses master
+  search as fallback. Maintenance reuses its confirmed result for titles,
+  genres and credits.
+
+
 - Import records publication and archives before moving library albums, and can
   resume interrupted source cleanup. Approval checks the download and compared
   library versions under the worker lock.

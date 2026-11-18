@@ -347,7 +347,7 @@ def is_various_artists(artist: str) -> bool:
 
 
 def credit_track(title: str, artists: list[str], album_artists: list[str],
-                 tracklist: Optional[list[dict]] = None) -> tuple[str, list[str]]:
+                 tracklist: Optional[list[dict]] = None, *, previous_title: str = "") -> tuple[str, list[str]]:
     """
     Title and artist values of a track under the library's credit rule:
     featured guests are artists (moved out of the title), remixers are not
@@ -355,6 +355,8 @@ def credit_track(title: str, artists: list[str], album_artists: list[str],
     *tracklist* supplies the track artists, guests and remixers when available.
     """
     title, guests = split_featuring(title)
+    if previous_title and not guests:
+        guests = split_featuring(previous_title)[1]
     discogs_track = _find_track(tracklist, title) if tracklist else None
     # "A feat. B & C" written into one artist value by some sources
     split_artists = []

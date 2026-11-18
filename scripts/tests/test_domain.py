@@ -64,6 +64,74 @@ class DiscogsDecisions(TempLibraryCase):
         self.assertEqual([(target.parent.name, meta.disc_number) for _, target, meta in tracks],
                          [("CD1", 1), ("CD2", 2)])
 
+    def test_maintenance_preserves_another_edition_title(self):
+        album = self.music / "Example Artist" / "2005 - Album"
+        local = ["Opening", "It’s not over now", "Finale", "Warmth"]
+        remote = ["Opening", "It's Over Now", "Finale", "Warmth"]
+        for number, title in enumerate(local, 1):
+            make_flac(album / f"{number}.flac", title=title, tracknumber=str(number),
+                      artist="Example Artist", albumartist="Example Artist", album="Album", date="2005")
+        match = {"artist": "Example Artist", "title": "Album", "year": "2005",
+                 "tracklist": [{"position": str(number), "title": title}
+                               for number, title in enumerate(remote, 1)]}
+        match["tracklist"][0]["artists"] = "Different Performer"
+        with mock.patch.object(discogs, "fetch_album", return_value=match) as fetch, \
+                mock.patch.object(covers, "fetch_deezer_cover", return_value=None):
+            plan = library.plan_library_fixes(check_all=True)
+        self.assertTrue(plan)
+        self.assertFalse(any(field in {"title", "artist"} for entry in plan for _, field, _, _ in entry["tag_fixes"]))
+        fetch.assert_called_once()
+
+    def test_no_catalogue_match_preserves_symbolic_punctuation_in_album_tag(self):
+        title = "l--ll-ll ll-ll- l--l-"
+        album = self.music / "Artist" / f"2010 - {title}"
+        track = make_flac(album / "one.flac", title="One", album=title, date="2010", tracknumber="1")
+        with mock.patch.object(discogs, "fetch_album", return_value=None):
+            plan = library._plan_title(album, [track], check_all=True)
+        self.assertEqual(plan["new_album"], title)
+        self.assertEqual(plan["new_folder"], album.name)
+
+    def test_human_title_spelling_ignores_formatting_but_preserves_version_words(self):
+        for local, remote, compatible in [
+            ("Delusions / Ruminations / Interlude", "Delusions/Rumination (Interlude)", True),
+            ("23Kid", "23kid", True),
+            ("Sing to the Moon", "Sing To The Moon (Laura Mvula Rework)", False),
+            ("It's Not Over Now", "It's Over Now", False),
+            ("Song (Radio Edit)", "Song (Extended Mix)", False),
+            ("Theme 1994", "Theme 1995", False),
+        ]:
+            with self.subTest(local=local, remote=remote):
+                self.assertEqual(library._comparable_title(local, remote), compatible)
+
+    def test_spelling_change_needs_duration_evidence(self):
+        album = self.music / "Artist" / "Album"
+        track = make_flac(album / "one.flac", title="Tether", tracknumber="1", seconds=3)
+        candidate = [{"position": "1", "title": "Together"}]
+        self.assertEqual(library._confirmed_tracks(album, [track], candidate, candidate), {})
+        candidate = [{"position": "1", "title": "Tehter"}]
+        self.assertEqual(library._confirmed_tracks(album, [track], candidate, candidate), {})
+        candidate[0]["duration"] = "0:09"
+        self.assertEqual(library._confirmed_tracks(album, [track], candidate, candidate), {})
+        candidate[0]["duration"] = "0:03"
+        self.assertEqual(library._confirmed_tracks(album, [track], candidate, []), {})
+        self.assertEqual(library._confirmed_tracks(album, [track], candidate, [
+            {"position": "1", "title": "Tether"},
+        ]), {})
+        self.assertEqual(library._confirmed_tracks(album, [track], candidate, candidate), {track: candidate[0]})
+
+    def test_discogs_standard_capitals_do_not_replace_artist_styling(self):
+        self.assertEqual(library._edition_track_title("ilanders", "Ilanders"), "ilanders")
+        self.assertEqual(library._edition_track_title("23Kid", "23kid"), "23kid")
+
+    def test_canonical_title_keeps_an_already_documented_guest(self):
+        album = self.music / "Main" / "Album"
+        track = make_flac(album / "one.flac", title="Song (feat. Guest)", tracknumber="1",
+                          artist="Main", albumartist="Main")
+        rows = [{"position": "1", "title": "Song", "artists": "Main"}]
+        changes = library._plan_tag_fixes(album, [track], {}, {}, None, canonical_tracklist=rows)
+        self.assertIn(["one.flac", "title", ["Song (feat. Guest)"], ["Song"]], changes)
+        self.assertIn(["one.flac", "artist", ["Main"], ["Main", "Guest"]], changes)
+
     def test_malformed_discogs_search_is_an_outage(self):
         reply = mock.Mock(status_code=200, headers={}, json=mock.Mock(return_value=[]))
         with mock.patch.object(discogs._SESSION, "get", return_value=reply):

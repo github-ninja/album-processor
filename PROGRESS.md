@@ -27,3 +27,15 @@ The complete 202-test suite passed from commit 0b5c0f1. A final callback trace f
 - The disposable container ran with init, UID/GID 1000, writable synthetic media mounts and the correct Europe/Moscow offset. CLI smoke checks passed for help, maintenance planning and application, release status, quality and empty import discovery.
 - Public Compose configuration validation and `git diff --check` passed. The code is in commits `0b5c0f1` and `d2b2e1e`.
 - Production still uses the original checkout. Live Telegram, Gemini, downloader and Discogs checks remain outside this verification. The public Deezer metadata probe succeeded. The functional audit records the decision benchmarks and remaining limits.
+
+## Follow-up: live library plan review
+
+- Production baseline `fef8fd8`, audit branch baseline `1d9a7af`. The full production planner is running against a read-only bind mount in a disposable container. Discogs responded through the bot's existing network route. Responses and private review artifacts are kept outside the repository.
+- The first proposals include case-only and competing catalogue spellings. Compare an independent label source when the editions disagree. Check album identity, local audio programme, path collisions, tag coherence, covers, conversion and gain separately.
+- Next operation: classify the baseline proposals, patch confirmed policy errors in the responsible module, replay the same responses and verify the fixes.
+
+Live audit replies showed that fully populated Discogs track positions could still import names from a different edition. Existing album tags also lost meaningful punctuation through the download-folder parser. Maintenance now preserves local album punctuation on an unverified match and checks the complete positional programme before accepting catalogue track titles and credits. Discogs follows the verified release's master link, uses master search as fallback and avoids a second lookup for supplemental metadata during the full check. The targeted pre-change and post-change samples share the captured API responses. The optimized full run is active with a single live caller.
+
+Independent source checks confirmed the need to distinguish catalogue editing from release metadata. Discogs applies standard title casing (the Warp release keeps the lower-case styling). A CD and a current digital edition of the same album carry different text, and their timings separate the editions in the library. Spelling changes now require timing agreement and corroboration from the master response already fetched. Position-validated credits stay attached to the relevant track. Sample replay preserves the affected existing titles while retaining independently confirmed corrections.
+
+The live run reached 170 of 468 albums. A recorded release response contained null format descriptions. The client now treats absent optional collections as empty, so this valid audio edition stays in consideration without repeated candidate requests. The focused regressions and earlier full suite passed. The final replay is queued after the live run and only requests data missing from the captured response set.

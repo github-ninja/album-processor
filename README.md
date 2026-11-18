@@ -53,9 +53,9 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   the files (a namesake band's album) is rejected. Discogs master data defines
   album identity; a matching audio edition supplies the tracklist, so a DVD
   key release cannot rename an audio album or win on one-sided track overlap.
-  The matched release's master link takes priority over a conflicting title
-  search. Rejected candidates do not end the search. Edition scoring matches
-  each track once and checks its order. `/fixlibrary all` does not replace
+  The matched release supplies its master link. An independent master search
+  is a fallback when release search yields no confirmed result. Edition
+  scoring matches each track once and checks its order. `/fixlibrary all` does not replace
   album identity from a partial tracklist or one that strongly conflicts with
   the local track order.
 - Another version of an album — *Instrumentals*, *Remixes* — stays a separate
@@ -153,8 +153,12 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
 - `/fixlibrary all` also re-checks every album title and, when the matching
   Discogs audio edition has a complete tracklist with unique numeric positions—or a
   complete, sequential vinyl-side order—matching the library, canonicalises track
-  titles and filenames by track number. Partial or ambiguous tracklists are left
-  alone.
+  titles and filenames by track number. The complete position map must also agree
+  with established track titles, version qualifiers and available durations.
+  Spelling changes also require supporting timings and agreement with the master.
+  Discogs standard capitalization
+  alone leaves existing artist styling intact. Without a confirmed catalogue
+  match, maintenance preserves punctuation in the existing album tag.
 
 **Safety**
 - Imports run on a private copy in `music/.album_processor/work/`. Downloads stay

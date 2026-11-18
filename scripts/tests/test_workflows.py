@@ -299,7 +299,7 @@ class DiscogsTitleTypo(TempLibraryCase):
             found = discogs.fetch_album("Catching Flies", "Beats & Peaces II")
         self.assertEqual((found["title"], found["artist"], found["year"]),
                          ("Beats & Pieces II", "Catching Flies", "2026"))
-        self.assertEqual(len(searches), 5)  # two master-first searches, then release fallback
+        self.assertEqual(len(searches), 3)  # successful release lookup needs no master search
 
 
 class DiscogsVersionOfAnAlbum(TempLibraryCase):
@@ -467,7 +467,7 @@ class FixLibrary(TempLibraryCase):
 
     def test_full_discogs_check_canonicalises_titles_from_a_complete_tracklist(self):
         album = self.music / "Test Artist" / "2000 - Test Album"
-        for number, title in enumerate(("Wrong One", "Right Two"), 1):
+        for number, title in enumerate(("Rght One", "Right Two"), 1):
             make_flac(album / f"{number:02}.flac", tracknumber=str(number), title=title,
                       artist="Test Artist", albumartist="Test Artist", album="Test Album",
                       date="2000", genre="Electronic", releasetype="album")
@@ -475,7 +475,8 @@ class FixLibrary(TempLibraryCase):
                  # The API result order is intentionally different from
                  # the explicit track positions.
                  "tracklist": [{"position": "2", "title": "Right Two"},
-                               {"position": "1", "title": "Right One"}]}
+                               {"position": "1", "title": "Right One", "duration": "0:02"}]}
+        found["master_tracklist"] = found["tracklist"]
         with mock.patch.object(library, "library_album_dirs", return_value=[album]), \
                 mock.patch.object(discogs, "fetch_album", return_value=found):
             plan = library.plan_library_fixes(check_all=True)
@@ -493,6 +494,7 @@ class FixLibrary(TempLibraryCase):
                       date="2000", genre="Electronic", releasetype="album")
         found = {"artist": "Test Artist", "title": "Test Album", "year": "2000",
                  "tracklist": [{"position": "1", "title": "Canonical First"}]}
+        found["master_tracklist"] = found["tracklist"]
         with mock.patch.object(library, "library_album_dirs", return_value=[album]), \
                 mock.patch.object(discogs, "fetch_album", return_value=found):
             plan = library.plan_library_fixes(check_all=True)
@@ -501,14 +503,15 @@ class FixLibrary(TempLibraryCase):
 
     def test_full_discogs_check_maps_vinyl_sides_to_sequential_library_tracks(self):
         album = self.music / "Test Artist" / "2000 - Vinyl Album"
-        for number, title in enumerate(("Wrong One", "Wrong Two", "Wrong Three"), 1):
+        for number, title in enumerate(("Rght One", "Rght Two", "Rght Three"), 1):
             make_flac(album / f"{number:02}.flac", tracknumber=str(number), title=title,
                       artist="Test Artist", albumartist="Test Artist", album="Vinyl Album",
                       date="2000", genre="Electronic", releasetype="album")
         found = {"artist": "Test Artist", "title": "Vinyl Album", "year": "2000",
-                 "tracklist": [{"position": "B1", "title": "Right Three"},
-                               {"position": "A2", "title": "Right Two"},
-                               {"position": "A1", "title": "Right One"}]}
+                 "tracklist": [{"position": "B1", "title": "Right Three", "duration": "0:02"},
+                               {"position": "A2", "title": "Right Two", "duration": "0:02"},
+                               {"position": "A1", "title": "Right One", "duration": "0:02"}]}
+        found["master_tracklist"] = found["tracklist"]
         with mock.patch.object(library, "library_album_dirs", return_value=[album]), \
                 mock.patch.object(discogs, "fetch_album", return_value=found):
             plan = library.plan_library_fixes(check_all=True)
