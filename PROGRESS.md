@@ -19,3 +19,11 @@ The domain pass found one-to-many Discogs track matches, early termination after
 Architecture and the functional audit are documented in docs/. The baseline failed all nine independently selected comparison tests. The revised suite passed 200 tests before the final silence/ReplayGain check. Compose configuration and dependency integrity passed. Next operation: run the full suite on the final built image, smoke-test the CLI and runtime user with isolated volumes, then commit the branch. The first build is downloading Pillow after successful acquisition of PyAV, Matplotlib and NumPy.
 
 The complete 202-test suite passed from commit 0b5c0f1. A final callback trace found that Telegram's short key still omitted the compared library snapshot. The fix includes that snapshot in the key so a refreshed preview cannot revive the previous button. A dedicated unit test covers both keys. The initial image build is finishing the remaining wheels.
+
+## Final verification
+
+- Built the public Dockerfile with the pinned dependencies and the final source tree (image ID starts with `314f3bf84c7e`).
+- Ran the complete suite in the built image and with networking disabled. All 203 tests passed in 39.1 s. `pip check` passed.
+- The disposable container ran with init, UID/GID 1000, writable synthetic media mounts and the correct Europe/Moscow offset. CLI smoke checks passed for help, maintenance planning and application, release status, quality and empty import discovery.
+- Public Compose configuration validation and `git diff --check` passed. The code is in commits `0b5c0f1` and `d2b2e1e`.
+- Production still uses the original checkout. Live Telegram, Gemini, downloader and Discogs checks remain outside this verification. The public Deezer metadata probe succeeded. The functional audit records the decision benchmarks and remaining limits.
