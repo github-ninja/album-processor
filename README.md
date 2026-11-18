@@ -40,6 +40,10 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
 - Removes non-music files (logs, cues, scans, playlists) and empty folders.
 
 **Metadata from Discogs**
+- Project policy (KISS). Once the correct release is identified, Discogs is the
+  sole source of truth for catalogue metadata. Use its values when sources
+  disagree and accept occasional catalogue errors. Local tags help identify the
+  edition and serve as a fallback when no Discogs match can be confirmed.
 - Folder prefixes such as `Artist - YYYY - Album` are removed before searching.
 - Album title from the Discogs *master* release, year of the *original* release,
   genres from Discogs styles.
