@@ -15,7 +15,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Discogs release lookup follows the master link directly and uses master
   search as fallback. Maintenance reuses its confirmed result for titles,
   genres and credits.
-
+- Maintenance verifies the approved cover before publishing the album. A
+  changed or unavailable image requires a new plan.
 
 - Import records publication and archives before moving library albums, and can
   resume interrupted source cleanup. Approval checks the download and compared

@@ -10,7 +10,7 @@ from mutagen.flac import FLAC
 from mutagen.id3 import ID3, APIC
 from mutagen.mp4 import MP4
 
-from albumproc import cli, config, cue, deezer_dl, discogs, files, jobs, library, opinion, quality, releases, tags, upconvert
+from albumproc import cli, config, covers, cue, deezer_dl, discogs, files, jobs, library, opinion, quality, releases, tags, upconvert
 from tests.helpers import TempLibraryCase, make_flac, make_image, make_m4a
 
 
@@ -245,6 +245,31 @@ class LibrarySafety(TempLibraryCase):
             self.assertEqual(library.apply_library_fixes([entry]), 1)
         self.assertEqual(track.read_bytes(), before)
         self.assertFalse(list(config.state_dir().glob('replaced/**/*.*')))
+
+    def test_maintenance_applies_only_the_approved_cover(self):
+        album = self.album()
+        track = album / 'one.flac'
+        before = track.read_bytes()
+        cover_path = album / config.COVER_NAME
+        approved = make_image((1000, 1000), seed=1)
+        different = make_image((1000, 1000), seed=2)
+        with mock.patch.object(covers, 'fetch_deezer_cover', return_value=approved):
+            cover = library._plan_cover(album, [track], 'A', 'Album')
+        self.assertEqual(cover['origin'], 'deezer')
+        entry = self.entry(album, manifest=jobs.manifest(album), cover=cover)
+
+        for reply in (different, None):
+            with self.subTest(has_reply=reply is not None), \
+                    mock.patch.object(covers, 'fetch_deezer_cover', return_value=reply):
+                self.assertEqual(library.apply_library_fixes([entry]), 1)
+                self.assertEqual(track.read_bytes(), before)
+                self.assertFalse(cover_path.exists())
+                self.assertFalse(list(config.state_dir().glob('replaced/**/*.*')))
+
+        with mock.patch.object(covers, 'fetch_deezer_cover', return_value=approved):
+            self.assertEqual(library.apply_library_fixes([entry]), 0)
+        self.assertEqual(cover_path.read_bytes(), covers.normalize_cover(approved))
+        self.assertEqual(tags.get_embedded_picture(track), cover_path.read_bytes())
 
     def test_maintenance_recovers_on_both_sides_of_publication(self):
         album = self.album()

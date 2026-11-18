@@ -156,9 +156,9 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   titles and filenames by track number. The complete position map must also agree
   with established track titles, version qualifiers and available durations.
   Spelling changes also require supporting timings and agreement with the master.
-  Discogs standard capitalization
-  alone leaves existing artist styling intact. Without a confirmed catalogue
-  match, maintenance preserves punctuation in the existing album tag.
+  Discogs standard capitalization alone leaves existing artist styling intact.
+  Without a confirmed catalogue match, maintenance preserves punctuation in
+  the existing album tag.
 
 **Safety**
 - Imports run on a private copy in `music/.album_processor/work/`. Downloads stay
@@ -175,7 +175,8 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   failed rename batches roll back. CUE splitting rejects duplicate tracks and
   leaves the source image intact if writing or tagging fails.
 - Library plans reject stale metadata, missing tracks, path escapes and existing
-  destination folders before applying changes. Lossless conversion and renaming
+  destination folders before applying changes. A changed or unavailable approved
+  cover requires a new plan for the album. Lossless conversion and renaming
   are handled together on a private copy. The entire original goes to the archive
   on success. Totals reflect the actual tracks and discs.
 - An unreachable downloader is treated as potentially busy. Download completion

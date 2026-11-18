@@ -30,6 +30,7 @@ import re
 import shutil
 import unicodedata
 from collections import Counter, defaultdict
+from hashlib import sha256
 from pathlib import Path
 from typing import Optional
 
@@ -452,6 +453,7 @@ def _plan_cover(album_dir: Path, files: list[Path], artist: str, album: str) -> 
     final_size = covers.image_size(final)
     return {
         "origin": origin,
+        "sha256": sha256(final).hexdigest(),
         "from_size": list(size) if size else None,
         "to_size": list(final_size) if final_size else None,
         "rewrite_cover": rewrite,
@@ -646,9 +648,12 @@ def _apply_tag_fixes(album_dir: Path, fixes: list[list]) -> int:
     return len(by_file)
 
 
-def _apply_cover(album_dir: Path, files: list[Path], artist: str, album: str) -> Optional[str]:
-    """Re-decide the cover (images are not stored in plans) and apply it."""
+def _apply_cover(album_dir: Path, files: list[Path], artist: str, album: str,
+                 expected_digest: str | None) -> Optional[str]:
+    """Apply the approved artwork to the staged album."""
     final, origin, _ = covers.choose_cover(album_dir, files, artist, album)
+    if expected_digest is not None and (final is None or sha256(final).hexdigest() != expected_digest):
+        raise ValueError("approved cover changed or became unavailable; build a new plan")
     if final is None:
         return None
     rewrite, stray, stale, copies = _cover_changes(album_dir, files, final)
@@ -744,8 +749,8 @@ def _apply_to_copy(work: Path, entry: dict, pairs: list) -> None:
             update_album_tags(f, entry["new_album"], entry["new_year"])
     if entry.get("replaygain"):
         replaygain.tag_album(files)
-    if entry.get("cover"):
-        result = _apply_cover(work, files, entry["artist"], entry["new_album"])
+    if cover := entry.get("cover"):
+        result = _apply_cover(work, files, entry["artist"], entry["new_album"], cover.get("sha256"))
         if result:
             log.info("  🖼️  %s", result)
 
