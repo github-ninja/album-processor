@@ -310,6 +310,14 @@ class DownloadPaths(TempLibraryCase):
 
 
 class BotLifecycle(unittest.IsolatedAsyncioTestCase):
+    def test_replacement_buttons_identify_the_displayed_library_snapshot(self):
+        import bot
+        entry = {"kind": "replace", "path": "/downloads/Album",
+                 "source_manifest": [["source.flac", 1, 1]],
+                 "copies": [["/music/A/Album", [["first.flac", 1, 1]]]]}
+        changed = {**entry, "copies": [["/music/A/Album", [["first.flac", 1, 2]]]]}
+        self.assertNotEqual(bot._decision_key(entry), bot._decision_key(changed))
+
     async def test_shutdown_terminates_an_active_worker(self):
         import bot
         import tempfile

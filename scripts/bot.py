@@ -260,6 +260,8 @@ async def _edit_text(query, text: str) -> None:
 
 def _decision_key(entry: dict) -> str:
     identity = [entry.get('kind', 'upconvert'), entry['path'], entry.get('source_manifest')]
+    if "copies" in entry:
+        identity.append(entry["copies"])
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
 
 
