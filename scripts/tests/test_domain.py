@@ -91,6 +91,17 @@ class DiscogsDecisions(TempLibraryCase):
         self.assertEqual(plan["new_album"], title)
         self.assertEqual(plan["new_folder"], album.name)
 
+    def test_library_plan_distinguishes_an_outage_from_no_catalogue_match(self):
+        album = self.music / "Artist" / "2000 - Album"
+        track = make_flac(album / "one.flac", title="One", album="Album", date="2000", tracknumber="1")
+        with mock.patch.object(discogs, "lookup_album", return_value=(None, "unavailable")):
+            plan = library._plan_title(album, [track], check_all=True)
+        self.assertIn("не удалось завершить проверку", plan["note"])
+        with mock.patch.object(discogs, "lookup_album", return_value=(None, "unmatched")):
+            plan = library._plan_title(album, [track], check_all=True)
+        self.assertIn("нет совпадения", plan["note"])
+        self.assertEqual((plan["new_album"], plan["new_year"]), ("Album", "2000"))
+
     def test_human_title_spelling_ignores_formatting_but_preserves_version_words(self):
         for local, remote, compatible in [
             ("Delusions / Ruminations / Interlude", "Delusions/Rumination (Interlude)", True),

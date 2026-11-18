@@ -341,9 +341,11 @@ def _plan_title(album_dir: Path, files: list[Path], check_all: bool) -> dict:
         return True
 
     found = None
+    statuses = set()
     # Tags usually carry punctuation missing from the folder name.
     for query in dict.fromkeys(q for q in (old_album.strip(), folder_title) if q):
-        candidate = discogs.fetch_album(artist, query, track_titles=local_titles, accept=accepts)
+        candidate, status = discogs.lookup_album(artist, query, track_titles=local_titles, accept=accepts)
+        statuses.add(status)
         if candidate and accepts(candidate):
             found = candidate
             result["note"] = ""
@@ -357,7 +359,12 @@ def _plan_title(album_dir: Path, files: list[Path], check_all: bool) -> dict:
         inferred = clean_folder_name(folder_title)
         local_title = clean_text(old_album) or strip_artist_prefix(inferred, artist) or inferred
         result.update(new_album=local_title, new_year=old_year or folder_year)
-        result["note"] = result["note"] or "нет совпадения в Discogs — только локальная чистка"
+        if "unavailable" in statuses:
+            log.warning("Discogs check incomplete for %s / %s", artist, album_dir.name)
+            result["note"] = "не удалось завершить проверку Discogs — только локальная чистка"
+        elif not result["note"]:
+            result["note"] = ("Discogs не подтвердил издание — только локальная чистка" if "rejected" in statuses
+                              else "нет совпадения в Discogs — только локальная чистка")
     result["new_folder"] = album_folder_name(result["new_year"], result["new_album"])
     return result
 
