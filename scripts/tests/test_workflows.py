@@ -503,13 +503,13 @@ class FixLibrary(TempLibraryCase):
 
     def test_full_discogs_check_maps_vinyl_sides_to_sequential_library_tracks(self):
         album = self.music / "Test Artist" / "2000 - Vinyl Album"
-        for number, title in enumerate(("Rght One", "Rght Two", "Rght Three"), 1):
+        for number, title in enumerate(("Rght One", "Twilght", "Breez"), 1):
             make_flac(album / f"{number:02}.flac", tracknumber=str(number), title=title,
                       artist="Test Artist", albumartist="Test Artist", album="Vinyl Album",
                       date="2000", genre="Electronic", releasetype="album")
         found = {"artist": "Test Artist", "title": "Vinyl Album", "year": "2000",
-                 "tracklist": [{"position": "B1", "title": "Right Three", "duration": "0:02"},
-                               {"position": "A2", "title": "Right Two", "duration": "0:02"},
+                 "tracklist": [{"position": "B1", "title": "Breeze", "duration": "0:02"},
+                               {"position": "A2", "title": "Twilight", "duration": "0:02"},
                                {"position": "A1", "title": "Right One", "duration": "0:02"}]}
         found["master_tracklist"] = found["tracklist"]
         with mock.patch.object(library, "library_album_dirs", return_value=[album]), \
@@ -518,7 +518,7 @@ class FixLibrary(TempLibraryCase):
 
         title_fixes = {rel: new for rel, field, _, new in plan[0]["tag_fixes"] if field == "title"}
         self.assertEqual(title_fixes, {
-            "01.flac": ["Right One"], "02.flac": ["Right Two"], "03.flac": ["Right Three"],
+            "01.flac": ["Right One"], "02.flac": ["Twilight"], "03.flac": ["Breeze"],
         })
 
 

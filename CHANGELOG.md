@@ -11,10 +11,11 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Library maintenance preserves established album punctuation during local
   cleanup and requires a compatible ordered track programme before applying
   another edition's titles or credits. Timings and the master guard spelling changes,
-  and standard Discogs capitalization alone leaves existing styling intact.
+  and repeated transcription differences preserve established spelling. Catalogue
+  capitalization and punctuation variants leave existing title styling intact.
 - Discogs release lookup follows the master link directly and uses master
   search as fallback. Maintenance reuses its confirmed result for titles,
-  genres and credits.
+  genres and credits. Video editions cannot win from one-sided track overlap.
 - Maintenance verifies the approved cover before publishing the album. A
   changed or unavailable image requires a new plan.
 
@@ -38,9 +39,6 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 - `/fixlibrary` streams album-by-album progress and Discogs output to container logs,
   updates its Telegram status periodically and sends a heartbeat while planning.
-- Discogs identification now searches the master first for album identity, then
-  chooses a matching audio edition for its tracklist. DVD/video editions cannot
-  win from one-sided track overlap; `/fixlibrary all` uses the same local-track-aware lookup.
 - A matched release's master ID takes priority if the independent title search
   returns a conflicting master. Edition scoring includes track order, and
   `/fixlibrary all` will not change album identity from a partial tracklist or

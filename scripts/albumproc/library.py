@@ -132,12 +132,22 @@ def _comparable_title(local: str, remote: str) -> bool:
     return len(b) == len(a) + 1 and a[index:] == b[index + 1:]
 
 
-def _edition_track_title(local: str, remote: str) -> str:
-    """Keep established styling when Discogs only adds its standard capitals."""
-    words = re.findall(r"[^\W\d_]+(?:['’][^\W\d_]+)*", remote)
-    equivalent = unicodedata.normalize("NFKC", local).casefold() == unicodedata.normalize("NFKC", remote).casefold()
-    if equivalent and words and all(word[0].isupper() for word in words):
-        return local
+def _title_typography(title: str) -> str:
+    apostrophes = re.sub(r"(?<=\w)[’´](?=\w)", "'", title)
+    return re.sub(r"\s+([?!])", r"\1", unicodedata.normalize("NFKC", apostrophes))
+
+
+def _catalogue_title(local: str, remote: str) -> str:
+    """Keep local case and punctuation when the catalogue only standardizes styling."""
+    established = _title_typography(local)
+    if "&" not in remote:
+        established = re.sub(r"\s+&\s+", " and ", established)
+    candidate = _title_typography(remote)
+    if len(established) == len(candidate) and all(
+            old == new or (new.isupper() and old.casefold() == new.casefold())
+            for old, new in zip(established, candidate)):
+        if not re.search(r"(?<=\w)´(?=\w)|\s+[?!]", local):
+            return local
     return remote
 
 
@@ -157,6 +167,8 @@ def _confirmed_tracks(album_dir: Path, files: list[Path], tracklist: list[dict],
     """Return position-aligned metadata supported by one audio programme."""
     mapped = _positioned_tracks(album_dir, files, tracklist)
     confirmed = {}
+    spelling_fixes = {}
+    spelling_patterns: dict[tuple[str, str], set[str]] = defaultdict(set)
     master_positions = None
     for path, track in mapped.items():
         local, remote = read_tags(path)["title"], track["title"]
@@ -171,6 +183,8 @@ def _confirmed_tracks(album_dir: Path, files: list[Path], tracklist: list[dict],
             if local_key != remote_key:
                 if not _comparable_title(local, remote):
                     return {}
+                changed_word = next((a, b) for a, b in zip(local_key.split(), remote_key.split()) if a != b)
+                spelling_patterns[changed_word].add(local_key)
                 if master_positions is None:
                     master_positions = _positioned_tracks(album_dir, files, master_tracklist)
                 master_title = master_positions.get(path, {}).get("title", "")
@@ -178,7 +192,14 @@ def _confirmed_tracks(album_dir: Path, files: list[Path], tracklist: list[dict],
                 # against misspellings introduced on an individual edition.
                 if delta is None or delta > 2 or _title_key(master_title) != remote_key:
                     continue
-        confirmed[path] = {**track, "title": _edition_track_title(local, remote)}
+                spelling_fixes[path] = track
+                continue
+        confirmed[path] = {**track, "title": _catalogue_title(local, remote)}
+
+    # One repeated change across different titles suggests that this edition
+    # follows a different transcription. Its spelling edits need other evidence.
+    if all(len(titles) == 1 for titles in spelling_patterns.values()):
+        confirmed.update(spelling_fixes)
     return confirmed
 
 
@@ -329,7 +350,8 @@ def _plan_title(album_dir: Path, files: list[Path], check_all: bool) -> dict:
             break
 
     if found and found.get("title"):
-        result.update(new_album=found["title"], new_year=found.get("year") or folder_year or old_year,
+        result.update(new_album=_catalogue_title(clean_text(old_album), found["title"]),
+                      new_year=found.get("year") or folder_year or old_year,
                       source="discogs", _catalogue=found)
     else:
         inferred = clean_folder_name(folder_title)

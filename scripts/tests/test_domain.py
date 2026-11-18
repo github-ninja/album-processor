@@ -119,9 +119,39 @@ class DiscogsDecisions(TempLibraryCase):
         ]), {})
         self.assertEqual(library._confirmed_tracks(album, [track], candidate, candidate), {track: candidate[0]})
 
+    def test_edition_wide_transcription_is_not_evidence_of_individual_typos(self):
+        album = self.music / "Pudra" / "Album"
+        local = ["Davis Miles (Interlude)", "Skratchitura #1", "Skratchitura #2", "Tibet"]
+        remote = ["David Miles (Interlude)", "Scratchitura #1", "Scratchitura #2", "Tibet"]
+        paths = [make_flac(album / f"{index}.flac", title=title, tracknumber=str(index), seconds=3)
+                 for index, title in enumerate(local, 1)]
+        rows = [{"position": str(index), "title": title, "duration": "0:03"}
+                for index, title in enumerate(remote, 1)]
+        self.assertEqual(library._confirmed_tracks(album, paths, rows, rows), {paths[3]: rows[3]})
+
     def test_discogs_standard_capitals_do_not_replace_artist_styling(self):
-        self.assertEqual(library._edition_track_title("ilanders", "Ilanders"), "ilanders")
-        self.assertEqual(library._edition_track_title("23Kid", "23kid"), "23kid")
+        for local, remote, expected in (
+            ("ilanders", "Ilanders", "ilanders"),
+            ("23Kid", "23kid", "23kid"),
+            ("Sugar & Cream", "Sugar And Cream", "Sugar & Cream"),
+            ("Requiem for CS70 and Strings", "Requiem for CS70 And Strings", "Requiem for CS70 and Strings"),
+            ("Don't Stay", "Don´t Stay", "Don't Stay"),
+            ("I´ll Be Yours", "I'll Be Yours", "I'll Be Yours"),
+            ("Youth’s Fountain", "Youth's Fountain", "Youth’s Fountain"),
+            ("Why Does My Heart Feel so Bad?", "Why Does My Heart Feel So Bad ?", "Why Does My Heart Feel so Bad?"),
+        ):
+            with self.subTest(local=local, remote=remote):
+                self.assertEqual(library._catalogue_title(local, remote), expected)
+
+    def test_discogs_standard_capitals_do_not_rename_the_album(self):
+        album = self.music / "Opius" / "2025 - Sound of Hue"
+        track = make_flac(album / "one.flac", title="Example Track", album="Sound of Hue",
+                          date="2025", tracknumber="1")
+        candidate = {"artist": "Opius; Dacamera", "title": "Sound Of Hue", "year": "2025",
+                     "tracklist": [{"position": "1", "title": "Example Track"}]}
+        with mock.patch.object(discogs, "fetch_album", return_value=candidate):
+            plan = library._plan_title(album, [track], check_all=True)
+        self.assertEqual((plan["new_album"], plan["new_folder"]), ("Sound of Hue", album.name))
 
     def test_canonical_title_keeps_an_already_documented_guest(self):
         album = self.music / "Main" / "Album"

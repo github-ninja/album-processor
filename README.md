@@ -155,8 +155,10 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   complete, sequential vinyl-side order—matching the library, canonicalises track
   titles and filenames by track number. The complete position map must also agree
   with established track titles, version qualifiers and available durations.
-  Spelling changes also require supporting timings and agreement with the master.
-  Discogs standard capitalization alone leaves existing artist styling intact.
+  Spelling changes require supporting timings and agreement with the master.
+  A spelling change repeated across distinct tracks signals a different transcription.
+  Existing title styling is preserved when Discogs only adds capitals, spells
+  out an ampersand or supplies a different apostrophe style.
   Without a confirmed catalogue match, maintenance preserves punctuation in
   the existing album tag.
 
