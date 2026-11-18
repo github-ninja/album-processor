@@ -14,6 +14,7 @@ about -96 dBFS.
 
 import logging
 import os
+import tempfile
 from pathlib import Path
 
 import av
@@ -24,6 +25,7 @@ from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4
 
 from . import config
+from .files import safe_rename
 from .tags import flac_values, get_embedded_picture
 
 log = logging.getLogger(__name__)
@@ -48,6 +50,13 @@ def needs_conversion(path: Path) -> bool:
     return is_lossless(path)
 
 
+def sample_rate(path: Path) -> int:
+    if path.suffix.lower() == ".flac":
+        return FLAC(path).info.sample_rate
+    with av.open(str(path)) as container:
+        return container.streams.audio[0].codec_context.sample_rate
+
+
 def describe_format(path: Path) -> str:
     """"24/96" for a FLAC file, "ALAC 16/44.1" for the other formats."""
     with av.open(str(path)) as container:
@@ -62,9 +71,28 @@ def bits(ctx) -> int:
     return ctx.bits_per_raw_sample or (16 if ctx.format.bytes == 2 else 24)
 
 
-def decoded_blocks(container, stream):
-    """The stream's audio as decoded: blocks of frames × channels (int16, int32 or float)."""
+def decoded_frames(container, stream, path: Path):
+    """Check decoder output before using it for analysis or conversion."""
+    expected = FLAC(path).info.total_samples if path.suffix.lower() == ".flac" else 0
+    samples = 0
     for frame in container.decode(stream):
+        if frame.is_corrupt:
+            raise ValueError(f"corrupt audio frame: {path.name}")
+        samples += frame.samples
+        yield frame
+    if not samples or (expected and samples != expected):
+        raise ValueError(f"incomplete audio: {path.name} ({samples} samples, expected {expected or 'audio'})")
+
+
+def validate_audio(path: Path) -> None:
+    with av.open(str(path)) as container:
+        for _ in decoded_frames(container, container.streams.audio[0], path):
+            pass
+
+
+def decoded_blocks(container, stream, path: Path):
+    """The stream's audio as decoded: blocks of frames × channels (int16, int32 or float)."""
+    for frame in decoded_frames(container, stream, path):
         samples = frame.to_ndarray()
         yield samples.T if frame.format.is_planar else samples.reshape(-1, len(frame.layout.channels))
 
@@ -111,9 +139,11 @@ def convert_to_library_format(path: Path) -> Path:
     The original goes only after the new file has been written and checked.
     """
     target = path.with_suffix(".flac")
-    if target != path and target.exists():
+    if target != path and (target.exists() or target.is_symlink()):
         raise FileExistsError(f"{target.name} already exists")
-    tmp = path.with_name(f".{path.stem}.converting.flac")
+    descriptor, name = tempfile.mkstemp(prefix=".converting-", suffix=".flac", dir=path.parent)
+    os.close(descriptor)
+    tmp = Path(name)
     try:
         with av.open(str(path)) as container:
             stream = container.streams.audio[0]
@@ -126,7 +156,7 @@ def convert_to_library_format(path: Path) -> Path:
             read = written = 0
             with sf.SoundFile(tmp, "w", config.TARGET_RATE, channels, "PCM_16", format="FLAC",
                               compression_level=1.0) as dst:
-                for block in map(_as_float, decoded_blocks(container, stream)):
+                for block in map(_as_float, decoded_blocks(container, stream, path)):
                     read += len(block)
                     if resampler:
                         block = resampler.resample_chunk(block)
@@ -141,10 +171,16 @@ def convert_to_library_format(path: Path) -> Path:
         expected = round(read * config.TARGET_RATE / rate)
         if not read or abs(written - expected) > 1:
             raise RuntimeError(f"length mismatch: {written} frames, expected {expected}")
+        info = FLAC(tmp).info
+        if (info.total_samples, info.sample_rate, info.bits_per_sample, info.channels) != (
+                written, config.TARGET_RATE, config.TARGET_BITS, channels):
+            raise RuntimeError(f"invalid converted audio: {path.name}")
         _copy_metadata(path, tmp)
         os.chmod(tmp, path.stat().st_mode & 0o777)
-        os.replace(tmp, target)
-        if target != path:
+        if target == path:
+            os.replace(tmp, target)
+        else:
+            safe_rename(tmp, target)
             path.unlink()
         return target
     finally:

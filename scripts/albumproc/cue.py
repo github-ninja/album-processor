@@ -4,12 +4,13 @@ sheet) into tracks.
 
 Tracks are cut at their INDEX 01 marks, so a pregap (INDEX 00) stays at the
 end of the previous track, as on the CD; the first track starts at the
-beginning of the image.  The audio is copied sample for sample at the
-image's own resolution — conversion to 16/44.1, when needed, comes later.
+beginning of the image. Tracks keep the image's sample rate at 16-bit or
+24-bit FLAC resolution. Conversion to the library format comes later.
 """
 
 import logging
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -20,8 +21,8 @@ from mutagen.flac import FLAC
 
 from . import config
 from .audioformat import bits, decoded_blocks, is_lossless
-from .files import disc_dir_number, get_audio_files
-from .tags import read_tags
+from .files import disc_dir_number, get_audio_files, safe_rename
+from .tags import embed_picture, get_embedded_picture, read_tags
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +54,11 @@ def _decode(data: bytes) -> str:
     """CUE sheets come in UTF-8 (with or without BOM), UTF-16 or a legacy code page (cp1251)."""
     if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
         return data.decode("utf-16")
+    # A BOM-less sheet still starts with ASCII CUE commands.
+    if data[1:2] == b"\0" and data[3:4] == b"\0":
+        return data.decode("utf-16-le")
+    if data[:1] == b"\0" and data[2:3] == b"\0":
+        return data.decode("utf-16-be")
     try:
         return data.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -67,6 +73,8 @@ def parse_cue(path: Path) -> CueSheet:
         if index:
             number, minutes, seconds, frames = map(int, index.groups())
             if track and number == 1:
+                if track.start is not None or seconds >= 60 or frames >= _CD_FRAMES_PER_SECOND:
+                    raise ValueError(f"invalid INDEX 01 in {path.name}")
                 track.start = (minutes * 60 + seconds) * _CD_FRAMES_PER_SECOND + frames
             continue
         command = _COMMAND_RE.match(line)
@@ -100,6 +108,8 @@ def _image_of(audio: list[Path], sheet: CueSheet) -> Optional[Path]:
     found = ([f for f in audio if f.name.lower() == name.name.lower()]
              or [f for f in audio if f.stem.lower() == name.stem.lower()]
              or (audio if len(audio) == 1 else []))
+    if len(found) > 1:
+        raise ValueError(f"ambiguous image for {sheet.files[0]}")
     return found[0] if found and is_lossless(found[0]) else None
 
 
@@ -126,10 +136,11 @@ def split_image(image: Path, sheet: CueSheet, prefix: str = "") -> list[Path]:
             or any(a.start >= b.start for a, b in zip(tracks, tracks[1:]))):
         raise ValueError("CUE sheet has a track without INDEX 01 or out of order")
     targets = [image.with_name(f"{prefix}{t.number:02d}.flac") for t in tracks]
-    temps = [image.with_name(f".{prefix}{t.number:02d}.splitting.flac") for t in tracks]
-    if any(t.exists() for t in targets):
+    if any(t.exists() or t.is_symlink() for t in targets):
         raise FileExistsError("track files already exist next to the image")
     published = []
+    scratch = tempfile.TemporaryDirectory(prefix=".splitting-", dir=image.parent)
+    temps = [Path(scratch.name) / t.name for t in targets]
     try:
         with av.open(str(image)) as container:
             stream = container.streams.audio[0]
@@ -141,7 +152,7 @@ def split_image(image: Path, sheet: CueSheet, prefix: str = "") -> list[Path]:
             current, position = 0, 0
             out = sf.SoundFile(temps[0], "w", rate, channels, subtype, format="FLAC")
             try:
-                for block in decoded_blocks(container, stream):
+                for block in decoded_blocks(container, stream, image):
                     while len(block):
                         end = ends[current]
                         take = len(block) if end is None else min(len(block), end - position)
@@ -159,11 +170,16 @@ def split_image(image: Path, sheet: CueSheet, prefix: str = "") -> list[Path]:
             raise RuntimeError(f"image is shorter than the CUE sheet ({position} samples)")
 
         fallback = read_tags(image)
-        for track, temp in zip(tracks, temps):
+        picture = get_embedded_picture(image)
+        for track, temp, expected in zip(tracks, temps, written):
+            if FLAC(temp).info.total_samples != expected:
+                raise ValueError(f"invalid split track at CUE position {track.number}")
             _write_tags(temp, sheet, track, fallback)
+            if picture:
+                embed_picture(temp, picture)
             temp.chmod(config.FILE_MODE)
         for temp, target in zip(temps, targets):
-            temp.rename(target)
+            safe_rename(temp, target)
             published.append(target)
         image.unlink()
         return targets
@@ -172,8 +188,7 @@ def split_image(image: Path, sheet: CueSheet, prefix: str = "") -> list[Path]:
             target.unlink()
         raise
     finally:
-        for temp in temps:
-            temp.unlink(missing_ok=True)
+        scratch.cleanup()
 
 
 def split_album(album_dir: Path) -> int:

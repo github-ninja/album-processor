@@ -20,7 +20,7 @@ from PIL import Image, ImageOps
 
 from . import config
 from .files import disc_dir_number, has_audio_files
-from .names import artists_match, title_similarity, TITLE_MIN_SIMILARITY
+from .names import clean_folder_name, name_key
 from .tags import get_embedded_picture
 
 log = logging.getLogger(__name__)
@@ -37,7 +37,9 @@ SAME_IMAGE_MIN_SIMILARITY = 0.90   # correlation of 32×32 thumbnails
 
 def image_size(data: bytes) -> Optional[tuple[int, int]]:
     try:
-        return Image.open(io.BytesIO(data)).size
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            return image.size
     except Exception:  # noqa: BLE001
         return None
 
@@ -148,9 +150,34 @@ def current_cover(album_dir: Path, audio_files: list[Path]) -> Optional[bytes]:
         data = f.read_bytes()
         if image_size(data):
             return data
-    for f in audio_files[:1]:
-        return get_embedded_picture(f)
+    for f in audio_files:
+        picture = get_embedded_picture(f)
+        if picture and image_size(picture):
+            return picture
     return None
+
+
+def choose_cover(album_dir: Path, files: list[Path], artist: str, album: str) -> tuple[Optional[bytes], str, Optional[tuple]]:
+    """
+    (final JPEG, origin, original size) for the album: its own artwork,
+    upgraded from Deezer when the current one is missing, small or not
+    square and Deezer has the same image in a higher resolution.
+    """
+    source = current_cover(album_dir, files)
+    size = image_size(source) if source else None
+    chosen, origin = source, "local"
+
+    if size is None or not is_square(size) or min(size) < config.COVER_SIZE:
+        better = fetch_deezer_cover(artist, album)
+        better_size = image_size(better) if better else None
+        if better_size and is_square(better_size) and (size is None or min(better_size) > min(size)):
+            similarity = image_similarity(source, better) if source else None
+            if similarity is None or similarity >= SAME_IMAGE_MIN_SIMILARITY:
+                chosen, origin = better, "deezer"
+            else:
+                log.info("  ℹ️  Deezer cover differs from the current one (%.2f) — kept.", similarity)
+    final = normalize_cover(chosen) if chosen else None
+    return final, origin, size
 
 
 def fetch_deezer_cover(artist: str, album: str) -> Optional[bytes]:
@@ -163,15 +190,12 @@ def fetch_deezer_cover(artist: str, album: str) -> Optional[bytes]:
     try:
         resp = requests.get(_DEEZER_SEARCH_URL, params={"q": f"{artist} {album}", "limit": 10}, timeout=10)
         resp.raise_for_status()
-        best, best_score = None, 0.0
-        for result in resp.json().get("data", []):
-            if not artists_match(artist, result.get("artist", {}).get("name", "")):
-                continue
-            score = title_similarity(album, result.get("title", ""))
-            if score > best_score:
-                best, best_score = result, score
-        if not best or best_score < TITLE_MIN_SIMILARITY:
-            log.info("  ℹ️  No matching Deezer album found.")
+        artist_key, album_key = name_key(artist), name_key(clean_folder_name(album))
+        best = next((result for result in resp.json().get("data", [])
+                     if name_key(result.get("artist", {}).get("name", "")) == artist_key
+                     and name_key(clean_folder_name(result.get("title", ""))) == album_key), None)
+        if not best:
+            log.info("No matching Deezer album found.")
             return None
 
         cover_url = best.get("cover_xl") or best.get("cover_big")

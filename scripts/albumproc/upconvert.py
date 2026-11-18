@@ -17,15 +17,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+import soundfile as sf
+
 from . import config
 from .files import album_audio_files
-
-try:
-    import numpy as np
-    import soundfile as sf
-    _SPECTRAL_AVAILABLE = True
-except ImportError:
-    _SPECTRAL_AVAILABLE = False
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +106,7 @@ def _band_levels_db(power: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray]
     return centres, levels
 
 
-def _find_cutoff(centres: np.ndarray, levels: np.ndarray, sr: int) -> Optional[float]:
+def _find_cutoff(centres: np.ndarray, levels: np.ndarray) -> Optional[float]:
     """
     Locate a brick-wall cutoff: the frequency with the largest level drop
     between the windows just below and just above it, provided the band above
@@ -120,23 +116,15 @@ def _find_cutoff(centres: np.ndarray, levels: np.ndarray, sr: int) -> Optional[f
     top = len(levels) - 2  # ignore the anti-alias region right at Nyquist
     lo = int(10_000 // _SPEC_BAND_HZ)
 
-    best_drop, best_i = 0.0, None
+    best_drop, cutoff = _CUTOFF_MIN_DROP_DB, None
     for i in range(max(lo, edge), top - edge):
         below = levels[i - edge:i].mean()
-        above = levels[i + 1:i + 1 + edge].mean()
-        drop = below - above
-        if drop > best_drop:
-            best_drop, best_i = drop, i
-
-    if best_i is None or best_drop < _CUTOFF_MIN_DROP_DB:
-        return None
-    below = levels[best_i - edge:best_i].mean()
-    # Real cutoffs stay quiet above the edge (resampler images may leave small
-    # bumps); a dip followed by recovery to full level does not count
-    above = levels[best_i + 1:top]
-    if above.mean() > below - _CUTOFF_MIN_DROP_DB or above.max() > below - 6:
-        return None
-    return float(centres[best_i])
+        above = levels[i + 1:top]
+        drop = below - above[:edge].mean()
+        # A dip with a recovery to full level is a band rejection, not a cutoff.
+        if drop >= best_drop and above.mean() <= below - _CUTOFF_MIN_DROP_DB and above.max() <= below - 6:
+            best_drop, cutoff = drop, float(centres[i])
+    return cutoff
 
 
 def analyse_track_spectrum(file_path: Path) -> SpectrumVerdict:
@@ -148,11 +136,14 @@ def analyse_track_spectrum(file_path: Path) -> SpectrumVerdict:
         return SpectrumVerdict(file_path.name, None, "unknown")
 
     centres, levels = _band_levels_db(power, sr)
-    reference = np.median(levels[(centres >= 1_000) & (centres <= 5_000)])
+    midrange = levels[(centres >= 1_000) & (centres <= 5_000)]
+    if sr < 44_100 or not len(midrange):
+        return SpectrumVerdict(file_path.name, None, "unknown")
+    reference = np.median(midrange)
     if reference < _SILENCE_DB:
         return SpectrumVerdict(file_path.name, None, "unknown")
 
-    cutoff = _find_cutoff(centres, levels, sr)
+    cutoff = _find_cutoff(centres, levels)
     if cutoff is not None and cutoff < _LOSSY_CUTOFF_HZ:
         return SpectrumVerdict(file_path.name, cutoff, "lossy")
 
@@ -160,21 +151,18 @@ def analyse_track_spectrum(file_path: Path) -> SpectrumVerdict:
     return SpectrumVerdict(file_path.name, cutoff, "ok")
 
 
-def check_upconvert(album_path: Path) -> Optional[UpconvertReport]:
+def check_upconvert(album_path: Path, *, low_rate_sources: set[Path] | None = None) -> Optional[UpconvertReport]:
     """
     Run the spectral check on every lossless track in *album_path* and return
-    an album-level verdict.  Returns None if there is nothing to analyse or
-    the required libraries are missing.
+    an album-level verdict. Returns None for an album without eligible files.
     """
     files = [f for f in album_audio_files(album_path) if f.suffix.lower() in config.LOSSLESS_EXTENSIONS]
     if not files:
         return None
-    if not _SPECTRAL_AVAILABLE:
-        log.warning("⚠️  numpy/soundfile not installed — upconvert check skipped.")
-        return None
 
     log.info("🔬 Checking %d lossless track(s) for upconvert…", len(files))
-    tracks = [analyse_track_spectrum(f) for f in files]
+    tracks = [SpectrumVerdict(f.name, None, "unknown") if f in (low_rate_sources or ())
+              else analyse_track_spectrum(f) for f in files]
     for track, f in zip(tracks, files):
         track.file = str(f.relative_to(album_path))  # disc sub-folders included
     for t in tracks:
@@ -189,34 +177,20 @@ def check_upconvert(album_path: Path) -> Optional[UpconvertReport]:
     flagged = [t for t in analysed if t.verdict == "lossy"]
     if len(flagged) * 2 >= len(analysed):
         cutoff = float(np.median([t.cutoff_hz for t in flagged]))
-        return UpconvertReport("lossy", cutoff < _LOSSY_SURE_CUTOFF_HZ, cutoff,
+        strong = len(flagged) == len(analysed) and cutoff < _LOSSY_SURE_CUTOFF_HZ
+        return UpconvertReport("lossy", strong, cutoff,
                                len(flagged), len(analysed), tracks)
 
     flagged = sum(t.verdict != "ok" for t in analysed)
     return UpconvertReport("ok", True, None, flagged, len(analysed), tracks)
 
 
-def guess_lossy_source(cutoff_hz: float) -> str:
-    """Rough guess of the original MP3 bitrate from the LAME low-pass frequency."""
-    if cutoff_hz < 15_000:
-        return "≤96 kbps"
-    if cutoff_hz < 17_200:
-        return "~128 kbps"
-    if cutoff_hz < 18_000:
-        return "~160 kbps"
-    if cutoff_hz < 19_300:
-        return "~192 kbps"
-    if cutoff_hz < 19_900:
-        return "~256 kbps / V0"
-    return "~320 kbps"
-
-
 def log_upconvert_report(report: UpconvertReport) -> None:
     if report.verdict == "lossy":
         level = "Вероятно" if report.confident else "Возможно"
         log.warning(
-            "  🚩 %s апконверт из MP3/AAC: срез на %.1f kHz (%s) в %d/%d трек(ах).",
-            level, report.cutoff_hz / 1000, guess_lossy_source(report.cutoff_hz),
+            "  🚩 %s апконверт: спектральный срез на %.1f kHz в %d/%d трек(ах).",
+            level, report.cutoff_hz / 1000,
             report.flagged, report.analysed,
         )
     elif report.verdict == "ok":
@@ -234,7 +208,7 @@ def log_upconvert_report(report: UpconvertReport) -> None:
 
 def describe(report: UpconvertReport) -> str:
     """Short description of a flagged album for summaries and the bot."""
-    return f"MP3/AAC, срез {report.cutoff_hz / 1000:.1f} kHz"
+    return f"спектральный срез {report.cutoff_hz / 1000:.1f} kHz"
 
 
 def deferred_entry(album_path: Path, report: UpconvertReport) -> dict:

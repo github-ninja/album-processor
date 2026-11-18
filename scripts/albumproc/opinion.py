@@ -19,6 +19,7 @@ import requests
 
 from . import config, discogs, jobs, quality
 from .files import album_audio_files, library_album_dirs
+from .names import is_generic_title, name_key
 from .tags import read_tags
 
 log = logging.getLogger(__name__)
@@ -78,10 +79,11 @@ def listener_path() -> Path:
 def find_album(query: str) -> list[Path]:
     """Library albums whose "Artist/YYYY - Album" contains *query* (case aside), or the folder itself."""
     path = Path(query)
+    albums = library_album_dirs()
     if path.is_dir():
-        return [path]
+        return [album for album in albums if album.resolve() == path.resolve()]
     needle = query.casefold()
-    return [d for d in library_album_dirs()
+    return [d for d in albums
             if needle in str(d.relative_to(config.MUSIC_PATH)).casefold()]
 
 
@@ -105,14 +107,28 @@ def dossier(album_dir: Path) -> dict:
                 {"track": Path(t["file"]).stem, "dr": t["dr"], "flat_tops": t["clips"],
                  "flat_tops_per_minute": round(t["clips"] / max(t["seconds"] / 60, 1 / 60), 1),
                  "minutes": round(t["seconds"] / 60, 1),
-                 "true_peak_db": round(20 * math.log10(t["true_peak"]), 1) if t["true_peak"] else None}
+                 "true_peak_db": round(20 * math.log10(t["true_peak"]), 1) if t["true_peak"] is not None and t["true_peak"] > 0 else None}
                 for t in passport["tracks"]
             ],
         },
     }
-    found = jobs.identity_for(passport.get('audio', []))
+    artist, title = facts["album"]["artist"], facts["album"]["title"]
+    found = jobs.identity_for(passport.get("audio", []), artist=artist, title=title)
+    status = "matched"
     if found is None:
-        found = discogs.fetch_album(facts["album"]["artist"], facts["album"]["title"] or album_dir.name)
+        local = [read_tags(path)["title"] for path in files]
+        informative = [title for title in local if not is_generic_title(title)]
+
+        def accepts(album: dict) -> bool:
+            remote_artist = album.get("artist")
+            if artist and remote_artist and name_key(artist) != name_key(remote_artist):
+                return False
+            tracklist = album.get("tracklist") or []
+            return not informative or discogs.tracklist_agreement(informative, tracklist)[0] > 0.5
+
+        found, status = discogs.lookup_album(artist, title or album_dir.name, track_titles=local, accept=accepts)
+        if found and not accepts(found):
+            found, status = None, "rejected"
     if found and found.get("release_id"):
         history = discogs.edition_history(found["release_id"], found.get("master_id"))
         history["note"] = ("release — издание, найденное поиском Discogs: не обязательно то, "
@@ -120,7 +136,10 @@ def dossier(album_dir: Path) -> dict:
                            "(год · носитель · лейбл · пометки · ×число тиражей)")
         facts["discogs"] = history
     else:
-        facts["discogs"] = "альбом не найден в Discogs"
+        facts["discogs"] = {
+            "unavailable": "Discogs недоступен",
+            "rejected": "Discogs вернул кандидатов, но совпадение с альбомом не подтверждено",
+        }.get(status, "в Discogs нет подтверждённого совпадения")
     try:
         facts["listener"] = listener_path().read_text(encoding="utf-8").strip()
     except OSError:
@@ -141,6 +160,8 @@ def ask_gemini(facts: dict) -> str:
     if not config.GEMINI_API_KEY:
         raise OpinionError("не задан GEMINI_API_KEY")
     models = list(dict.fromkeys(m for m in (config.GEMINI_MODEL, config.GEMINI_FALLBACK_MODEL) if m))
+    if not models:
+        raise OpinionError("не заданы модели Gemini")
     for model in models:
         try:
             return _generate(model, facts)
@@ -170,17 +191,20 @@ def _generate(model: str, facts: dict) -> str:
         message = ""
         try:
             message = resp.json().get("error", {}).get("message", "")
-        except ValueError:
+        except (ValueError, AttributeError):
             pass
-        if "location" in message.lower():
+        if "location" in str(message).lower():
             raise OpinionError("Gemini API недоступен из страны сервера — задайте GEMINI_PROXY")
         if resp.status_code == 429:
             raise OpinionError("исчерпан лимит бесплатного тарифа Gemini — попробуйте позже")
         if resp.status_code in _OVERLOADED:
             raise _Overloaded(f"HTTP {resp.status_code}")
         raise OpinionError(f"Gemini: HTTP {resp.status_code} {message}".strip())
-    parts = ((resp.json().get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
-    text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+    try:
+        parts = ((resp.json().get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+    except (ValueError, AttributeError, TypeError, KeyError) as exc:
+        raise _Overloaded("Gemini вернул некорректный ответ") from exc
     if not text:
         raise _Overloaded("Gemini вернул пустой ответ")
     return text

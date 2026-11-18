@@ -10,6 +10,7 @@ blocks as BS.1770 prescribes — the album from the blocks of all its tracks.
 """
 
 import logging
+import math
 import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor
@@ -21,6 +22,8 @@ import av
 import av.filter
 import numpy as np
 from mutagen.flac import FLAC
+
+from .audioformat import decoded_frames
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +64,7 @@ def measure(path: Path) -> Measurement:
                     blocks.append(float(frame.metadata["lavfi.r128.M"]))
                     peak = max(peak, float(frame.metadata["lavfi.r128.true_peak"]))
 
-        for frame in container.decode(stream):
+        for frame in decoded_frames(container, stream, path):
             graph.push(frame)
             drain()
         graph.push(None)
@@ -80,7 +83,19 @@ def integrated_loudness(blocks: np.ndarray) -> Optional[float]:
 
 
 def has_replaygain(files: list[Path]) -> bool:
-    return all("replaygain_album_gain" in FLAC(f) for f in files if f.suffix.lower() == ".flac")
+    """A silent track can have measured peaks without an integrated gain."""
+    for path in files:
+        if path.suffix.lower() != ".flac":
+            continue
+        tags = FLAC(path)
+        for field in ("replaygain_track_peak", "replaygain_album_peak"):
+            try:
+                peak = float(tags[field][0])
+            except (KeyError, IndexError, ValueError):
+                return False
+            if not math.isfinite(peak) or peak < 0:
+                return False
+    return True
 
 
 def tag_album(files: list[Path]) -> None:
@@ -102,10 +117,10 @@ def tag_album(files: list[Path]) -> None:
             audio.pop(field, None)
         if track is not None:
             audio["replaygain_track_gain"] = f"{REFERENCE_LUFS - track:.2f} dB"
-            audio["replaygain_track_peak"] = f"{m.peak:.6f}"
         if album is not None:
             audio["replaygain_album_gain"] = f"{REFERENCE_LUFS - album:.2f} dB"
-            audio["replaygain_album_peak"] = f"{album_peak:.6f}"
+        audio["replaygain_track_peak"] = f"{m.peak:.6f}"
+        audio["replaygain_album_peak"] = f"{album_peak:.6f}"
         audio.save()
     if album is not None:
         log.info("  🔊 ReplayGain: album %+.2f dB, true peak %.4f", REFERENCE_LUFS - album, album_peak)

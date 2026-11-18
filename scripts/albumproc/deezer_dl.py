@@ -14,7 +14,6 @@ but not while deezer-downloader is still downloading.
 import ast
 import html
 import logging
-import shutil
 import time
 import uuid
 from pathlib import Path
@@ -23,7 +22,7 @@ from typing import Optional
 import requests
 
 from . import config, jobs
-from .files import album_audio_files, library_album_dirs
+from .files import album_audio_files, library_album_dirs, safe_rename
 from .names import album_identity, name_key, sanitize_path_component
 
 log = logging.getLogger(__name__)
@@ -58,7 +57,11 @@ def _call(method: str, path: str, **kwargs):
 
 
 def _queue() -> list[dict]:
-    return _call("GET", "/queue")
+    queue = _call("GET", "/queue")
+    if not isinstance(queue, list) or any(not isinstance(task, dict) or not isinstance(task.get("state"), str)
+                                         for task in queue):
+        raise DeezerError("deezer-downloader вернул некорректную очередь")
+    return queue
 
 
 def busy() -> bool:
@@ -82,16 +85,26 @@ def search(query: str, limit: int = 8) -> list[dict]:
     """Albums on Deezer: [{"id", "artist", "title", "in_library"}]."""
     owned = _owned()
     results = []
-    for item in _call("POST", "/search", json={"type": "album", "query": query})[:limit]:
-        artist, title = item.get("artist", ""), item.get("album", "")
+    response = _call("POST", "/search", json={"type": "album", "query": query})
+    if not isinstance(response, list):
+        raise DeezerError("deezer-downloader вернул некорректные результаты поиска")
+    for item in response[:limit]:
+        if not isinstance(item, dict):
+            continue
+        artist, title = item.get("artist"), item.get("album")
+        album_id = item.get("album_id")
+        if not isinstance(artist, str) or not isinstance(title, str) or not str(album_id).isdigit():
+            continue
         identity = album_identity(f"0000 - {sanitize_path_component(title)}")  # as folders spell it
-        results.append({"id": int(item["album_id"]), "artist": artist, "title": title,
+        results.append({"id": int(album_id), "artist": artist, "title": title,
                         "in_library": identity in owned.get(name_key(artist), set())})
     return results
 
 
 def _downloaded_files(result: str) -> list[str]:
     """A finished task's result: an (HTML-escaped) list of the files written, relative to its base."""
+    if not isinstance(result, str):
+        return []
     try:
         files = ast.literal_eval(html.unescape(result))
     except (ValueError, SyntaxError):
@@ -109,11 +122,11 @@ def _existing_tracks(files: list[str]) -> list[str]:
         if relative.is_absolute() or ".." in relative.parts or len(relative.parts) < 3 or relative.parts[0] != "albums":
             raise DeezerError("задача вернула путь вне папки альбомов")
         path = base / relative
-        if not path.resolve().is_relative_to(base / "albums"):
+        if path.resolve() != path:
             raise DeezerError("путь скачанного файла выходит за пределы папки альбомов")
         albums.add(relative.parts[1])
         if path.is_file() and path.suffix.lower() in config.AUDIO_EXTENSIONS:
-            existing.add(name)
+            existing.add(relative.as_posix())
     if len(albums) > 1:
         raise DeezerError("задача вернула файлы нескольких альбомов")
     return sorted(existing)
@@ -124,8 +137,9 @@ def _track_count(album_id: int) -> Optional[int]:
     try:
         response = requests.get(f"https://api.deezer.com/album/{album_id}", timeout=_TIMEOUT)
         response.raise_for_status()
-        total = response.json().get("nb_tracks")
-        return total if isinstance(total, int) and total > 0 else None
+        payload = response.json()
+        total = payload.get("nb_tracks") if isinstance(payload, dict) else None
+        return total if type(total) is int and total > 0 else None
     except (requests.RequestException, ValueError):
         return None
 
@@ -136,17 +150,22 @@ def quarantine(album_dir: Path) -> Path:
     aside.parent.mkdir(parents=True, exist_ok=True)
     if aside.exists():
         aside = aside.with_name(f'{aside.name}-{uuid.uuid4().hex[:12]}')
-    shutil.move(str(album_dir), str(aside))
+    safe_rename(album_dir, aside)
     return aside
 
 
 def ensure_complete(album_dir: Path, album_id: Optional[int] = None) -> None:
     """One completeness gate for downloads, discovery and explicit-path imports."""
+    snapshot = jobs.manifest(album_dir)
     job = jobs.open_job(album_dir)
-    album_id = album_id or job.get('deezer_album_id')
+    known_snapshot = job.get('deezer_manifest', job.get('source_manifest'))
+    if known_snapshot is None or known_snapshot == snapshot:
+        album_id = album_id or job.get('deezer_album_id')
     if album_id is None:
         # The queue is evidence of identity, never evidence of completeness.
         for task in reversed(_queue()):
+            if task.get('state') != 'mission accomplished':
+                continue
             files = _downloaded_files(task.get('result', ''))
             folder = album_dir.relative_to(config.DEEZER_DOWNLOADER_DIR).as_posix() + '/'
             if not any(name.startswith(folder) for name in files):
@@ -157,37 +176,42 @@ def ensure_complete(album_dir: Path, album_id: Optional[int] = None) -> None:
                 if type(candidate) is int and candidate > 0:
                     album_id = candidate
                     break
-            except (ValueError, SyntaxError, AttributeError):
+            except (ValueError, SyntaxError, AttributeError, TypeError):
                 continue
     if album_id is None:
         raise DeezerError(f'{album_dir.name}: не удалось установить Deezer album ID; импорт остановлен')
-    job['deezer_album_id'] = album_id
-    jobs.save(job)
     total = _track_count(album_id)
     if total is None:
         raise DeezerError(f'{album_dir.name}: не удалось подтвердить число треков Deezer; импорт остановлен')
     files = [str(f.relative_to(config.DEEZER_DOWNLOADER_DIR)) for f in album_audio_files(album_dir)]
     count = len(_existing_tracks(files))
+    if jobs.manifest(album_dir) != snapshot:
+        raise DeezerError(f'{album_dir.name}: файлы изменились во время проверки')
     if count != total:
         aside = quarantine(album_dir)
         job.update(status='incomplete', deferred=None)
         jobs.save(job)
         raise DeezerError(f'{album_dir.name}: скачано {count} из {total} треков; альбом не импортирован, он в {aside}')
+    job.update(deezer_album_id=album_id, deezer_manifest=snapshot)
+    jobs.save(job)
 
 
 def _run_task(album_id: int, deadline: float) -> list[str]:
     """Queue the album once and wait for the task: the files it has (downloaded or already there)."""
     if time.monotonic() >= deadline:
         raise DeezerError("истекло время ожидания скачивания")
-    task_id = _call("POST", "/download", json={"type": "album", "music_id": album_id,
-                                               "add_to_playlist": False, "create_zip": False})["task_id"]
+    response = _call("POST", "/download", json={"type": "album", "music_id": album_id,
+                                                "add_to_playlist": False, "create_zip": False})
+    if not isinstance(response, dict) or not response.get("task_id"):
+        raise DeezerError("deezer-downloader не вернул ID задачи")
+    task_id = response["task_id"]
     log.info("⬇️  Deezer album %s queued (task %s)", album_id, task_id)
     while time.monotonic() < deadline:
         task = next((t for t in _queue() if t.get("id") == task_id), None)
         if task is None:
             raise DeezerError("задача пропала из очереди deezer-downloader (перезапуск?)")
         if task.get("state") == "failed":
-            raise DeezerError(f"deezer-downloader не смог скачать альбом: {html.unescape(task.get('exception', ''))}")
+            raise DeezerError(f"deezer-downloader не смог скачать альбом: {html.unescape(str(task.get('exception') or ''))}")
         if task.get("state") == "mission accomplished":
             # deezer-downloader skips tracks it cannot get and still calls the task done
             return _downloaded_files(task.get("result", ""))
@@ -225,10 +249,6 @@ def download(album_id: int, timeout: float = _DOWNLOAD_TIMEOUT) -> Path:
         aside = quarantine(album_dir)
         raise DeezerError(f"после {len(_RETRY_PAUSES) + 1} попыток скачано только {len(files)} из {total} треков — "
                           f"часть альбома недоступна на Deezer. Неполный альбом не обработан, он в "
-                          f"{aside.relative_to(config.DOWNLOADS_PATH)}")
+                          f"{aside}")
     ensure_complete(album_dir, album_id)
-    stale = config.DEEZER_DOWNLOADER_DIR / "incomplete" / album_dir.name
-    if stale.is_dir():
-        shutil.rmtree(stale)  # an earlier incomplete try: the album is whole now
-        log.info("🗑️  Removed the earlier incomplete copy: %s", stale.name)
     return album_dir

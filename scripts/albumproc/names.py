@@ -43,7 +43,6 @@ _YEAR_ANYWHERE_RE = re.compile(r"[\(\[\s]+(\d{4})[\)\]\s]*")
 _INVISIBLE_RE = re.compile(r"[​-‏⁠﻿]")
 
 TITLE_MIN_SIMILARITY = 0.6
-ARTIST_MIN_SIMILARITY = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -250,10 +249,12 @@ def title_similarity(a: str, b: str) -> float:
 
 
 def artists_match(a: str, b: str) -> bool:
-    na, nb = normalize_title(a), normalize_title(b)
-    if not na or not nb or na in nb or nb in na:
-        return True
-    return difflib.SequenceMatcher(None, na, nb).ratio() >= ARTIST_MIN_SIMILARITY
+    """Match whole artist credits after spelling normalization."""
+    left = {name_key(value).replace(" ", "") for value in split_multi_value(a)}
+    right = {name_key(value).replace(" ", "") for value in split_multi_value(b)}
+    left.discard("")
+    right.discard("")
+    return bool(left and right and (left <= right or right <= left))
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +286,7 @@ def name_key(name: str) -> str:
     "fejka", "Trentemøller" and "Trentemoller", "T.C." and "TC" are the same person.
     """
     decomposed = unicodedata.normalize("NFKD", clean_text(name).casefold()).translate(_LATIN_NAME_FOLD)
-    return "".join(c for c in decomposed if c.isalnum() or c == " ").strip()
+    return " ".join("".join(c for c in decomposed if c.isalnum() or c == " ").split())
 
 
 def _split_names(text: str) -> list[str]:
@@ -314,8 +315,10 @@ def has_credit_markers(title: str, artists: list[str]) -> bool:
 
 def _find_track(tracklist: list[dict], title: str) -> Optional[dict]:
     """The Discogs track titled like *title* (positions differ between editions)."""
-    best = max(tracklist, key=lambda t: title_similarity(title, t.get("title", "")), default=None)
-    return best if best and title_similarity(title, best.get("title", "")) >= 0.9 else None
+    scored = [(title_similarity(title, entry.get("title", "")), entry) for entry in tracklist]
+    best_score = max((score for score, _ in scored), default=0.0)
+    matches = [entry for score, entry in scored if score == best_score]
+    return matches[0] if best_score >= 0.9 and len(matches) == 1 else None
 
 
 # "(X Remix)", "[X Rework]": X is a person, unless it names a version ("2010 Remix",

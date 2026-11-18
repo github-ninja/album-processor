@@ -12,7 +12,8 @@ from tests.helpers import TempLibraryCase, make_flac, make_image, make_m4a
 
 DISCOGS_ALBUM = {
     "title": "Antrakt", "artist": "Dissident; Cyberworm", "year": "2017",
-    "genre": "Drum n Bass; Jungle", "tracklist": [{"position": "1", "title": "Zerkalo"}],
+    "genre": "Drum n Bass; Jungle", "tracklist": [{"position": "1", "title": "Zerkalo"},
+                 {"position": "2", "title": "Spiritual Existential Funk"}],
 }
 
 
@@ -67,7 +68,10 @@ class ProcessDownload(TempLibraryCase):
                   artist=["Dissident & Cyberworm & Camo & Krooked", "Camo & Krooked"])
         make_flac(self.album / "02.flac", tracknumber="2", title="Horizon",
                   artist=["Skrillex, Dissident, Thys & Sleepnet", "Skrillex"])
-        self.assertTrue(self.run_pipeline())
+        with mock.patch.object(discogs, "fetch_album", return_value={**DISCOGS_ALBUM, "tracklist": [
+            {"position": "1", "title": "Nova"}, {"position": "2", "title": "Horizon"},
+        ]}):
+            self.assertTrue(self.run_pipeline())
         dest = self.music / "Dissident" / "2017 - Antrakt"
         self.assertEqual(FLAC(dest / "01. Dissident, Cyberworm & Camo & Krooked - Nova.flac")["artist"],
                          ["Dissident", "Cyberworm", "Camo & Krooked"])
@@ -81,7 +85,8 @@ class ProcessDownload(TempLibraryCase):
         self.assertTrue(state.not_found[0].startswith("Dissident & Cyberworm — "))
         found = pipeline.RunState()
         make_flac(self.downloads / "Plaid" / "Spokes" / "01.flac", tracknumber="1", title="Even Spring", artist="Plaid")
-        with mock.patch.object(discogs, "fetch_album", return_value={**DISCOGS_ALBUM, "artist": "Plaid", "title": "Spokes"}):
+        with mock.patch.object(discogs, "fetch_album", return_value={**DISCOGS_ALBUM, "artist": "Plaid", "title": "Spokes",
+                         "tracklist": [{"position": "1", "title": "Even Spring"}]}):
             pipeline.process_album(pipeline.find_new_albums()[0], found)
         self.assertEqual(found.not_found, [])
 
@@ -608,7 +613,8 @@ class MultiDiscDownloads(TempLibraryCase):
     def setUp(self):
         super().setUp()
         found = {"title": "Experience", "artist": "The Prodigy", "year": "1992", "genre": "Breakbeat",
-                 "tracklist": [{"position": "2-1", "title": "Your Love", "featuring": [], "remixers": []}]}
+                 "tracklist": [{"position": "1-1", "title": "Jericho"}, {"position": "1-2", "title": "Music Reach"},
+                               {"position": "2-1", "title": "Your Love", "featuring": [], "remixers": []}]}
         for patcher in (mock.patch.object(discogs, "fetch_album", return_value=found),
                         mock.patch.object(covers, "fetch_deezer_cover", return_value=None),
                         mock.patch.object(config, "UPCONVERT_ACTION", "warn")):

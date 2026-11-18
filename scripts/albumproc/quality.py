@@ -30,12 +30,12 @@ import soundfile as sf
 from mutagen.flac import FLAC
 
 from . import config
-from .files import album_audio_files, library_album_dirs
+from .files import album_audio_files, library_album_dirs, write_json
 
 log = logging.getLogger(__name__)
 
 _BLOCK_SECONDS = 3
-ANALYSIS_VERSION = 1
+ANALYSIS_VERSION = 2
 _CLIP_WINDOW_DB = 1.0
 # 🔴: crushed (DR ≤ 5), or heavily clipped without the dynamics to carry it;
 # clipped transients on an open master (DR 11, peaks shaved) stay 🟡
@@ -51,17 +51,34 @@ def store_path() -> Path:
 # Measuring
 # ---------------------------------------------------------------------------
 
-def _flat_top_levels(channel: np.ndarray) -> np.ndarray:
+def _flat_top_levels(channel: np.ndarray, *, starts_at_boundary: bool) -> np.ndarray:
     """Levels of the runs of ≥ 3 identical samples in *channel*."""
     same = np.diff(np.r_[0, (channel[1:] == channel[:-1]).astype(np.int8), 0])
     starts, ends = np.flatnonzero(same == 1), np.flatnonzero(same == -1)
-    return np.abs(channel[starts[ends - starts >= 2]])
+    valid = (ends - starts >= 2) & ((starts > 0) | starts_at_boundary)
+    return np.abs(channel[starts[valid]])
 
 
 def audio_id(path: Path) -> str:
     """Identity of a file's audio: the decoded-audio MD5 from STREAMINFO (or length and size without one)."""
     info = FLAC(path).info
     return f"{info.md5_signature:032x}" if info.md5_signature else f"{info.total_samples}:{path.stat().st_size}"
+
+
+def _numeric_tag(tags: FLAC, key: str) -> float | None:
+    values = (tags.get(key) or [""])[0].split()
+    if not values:
+        return None
+    try:
+        value = float(values[0])
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _loudness(tags: FLAC, gain_key: str) -> float | None:
+    gain = _numeric_tag(tags, gain_key)
+    return round(-18 - gain, 1) if gain is not None else None
 
 
 def measure_track(path: Path) -> dict:
@@ -72,18 +89,24 @@ def measure_track(path: Path) -> dict:
     peak = 0
     with sf.SoundFile(path) as audio:
         block = _BLOCK_SECONDS * audio.samplerate
+        tail = np.empty((0, audio.channels), dtype=np.int64)
         for chunk in audio.blocks(blocksize=block, dtype="int32", always_2d=True):
             frames += len(chunk)
             values = chunk.astype(np.int64)
             peak = max(peak, int(np.abs(values).max()))
-            for channel in values.T:
-                levels.append(_flat_top_levels(channel))
+            with_tail = np.concatenate((tail, values))
+            for channel in with_tail.T:
+                levels.append(_flat_top_levels(channel, starts_at_boundary=not len(tail)))
+            tail = values[-3:].copy()
             if len(chunk) == block or not rms:  # TT DR skips the last partial block
                 scaled = chunk / full_scale
                 rms.append(np.sqrt(2 * np.mean(scaled ** 2, axis=0)))
                 peaks.append(np.abs(scaled).max(axis=0))
         rate = audio.samplerate
 
+    declared = FLAC(path).info.total_samples
+    if not frames or (declared and frames != declared):
+        raise ValueError(f"incomplete audio: {path.name}")
     rms_blocks, peak_blocks = np.array(rms), np.array(peaks)
     channel_dr = []
     for ch in range(rms_blocks.shape[1]):
@@ -97,16 +120,14 @@ def measure_track(path: Path) -> dict:
     clips = int((levels >= peak * 10 ** (-_CLIP_WINDOW_DB / 20)).sum()) if peak else 0
 
     tags = FLAC(path)
-    gain = (tags.get("replaygain_track_gain") or [""])[0].split()
-    true_peak = (tags.get("replaygain_track_peak") or [""])[0]
     return {
         "file": path.name,
         "id": audio_id(path),
         "seconds": round(frames / rate, 1),
         "dr": round(float(np.mean(channel_dr)), 1) if channel_dr else None,
         "clips": clips,
-        "lufs": round(-18 - float(gain[0]), 1) if gain else None,
-        "true_peak": float(true_peak) if true_peak else None,
+        "lufs": _loudness(tags, "replaygain_track_gain"),
+        "true_peak": _numeric_tag(tags, "replaygain_track_peak"),
     }
 
 
@@ -118,10 +139,9 @@ def measure_album(album_dir: Path) -> dict:
     with ProcessPoolExecutor(max_workers=min(len(files), os.cpu_count() or 1),
                              mp_context=multiprocessing.get_context("forkserver")) as pool:
         tracks = list(pool.map(measure_track, files))
-    album_gain = (FLAC(files[0]).get("replaygain_album_gain") or [""])[0].split()
     return {
         "measured": time.strftime("%Y-%m-%d"),
-        "lufs": round(-18 - float(album_gain[0]), 1) if album_gain else None,
+        "lufs": _loudness(FLAC(files[0]), "replaygain_album_gain"),
         "tracks": tracks,
     }
 
@@ -151,7 +171,7 @@ def grade(passport: dict) -> str:
 
 
 def _db(value: Optional[float]) -> str:
-    return f"{20 * math.log10(value):+.1f} dB" if value else "—"
+    return f"{20 * math.log10(value):+.1f} dB" if value is not None and value > 0 else "—"
 
 
 def summary(passport: dict) -> str:
@@ -190,17 +210,16 @@ def describe(passport: dict) -> list[str]:
 
 def _load() -> dict[str, dict]:
     try:
-        return json.loads(store_path().read_text(encoding="utf-8"))
+        data = json.loads(store_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
+    if not isinstance(data, dict) or any(not isinstance(item, dict) for item in data.values()):
+        raise ValueError("quality.json must contain an object of album passports")
+    return data
 
 
 def _save(store: dict[str, dict]) -> None:
-    path = store_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(store, ensure_ascii=False, indent=1, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
+    write_json(store_path(), store, sort_keys=True)
 
 
 def _audio_key(album_dir: Path) -> list[str]:
@@ -211,7 +230,7 @@ def _rel(album_dir: Path) -> str:
     return str(album_dir.relative_to(config.MUSIC_PATH))
 
 
-def passport(album_dir: Path, store: Optional[dict] = None) -> dict:
+def passport(album_dir: Path, store: Optional[dict] = None, *, persist: bool = True) -> dict:
     """
     The album's passport: from the store when its audio is unchanged (even if
     it was renamed or moved), else measured.  Library albums are (re)stored.
@@ -236,20 +255,16 @@ def passport(album_dir: Path, store: Optional[dict] = None) -> dict:
         track = dict(by_audio[identities[path]].popleft())
         track["file"] = str(path.relative_to(album_dir))
         tags = FLAC(path)
-        gain = (tags.get("replaygain_track_gain") or [""])[0].split()
-        peak = (tags.get("replaygain_track_peak") or [""])[0]
-        track["lufs"] = round(-18 - float(gain[0]), 1) if gain else None
-        track["true_peak"] = float(peak) if peak else None
+        track["lufs"] = _loudness(tags, "replaygain_track_gain")
+        track["true_peak"] = _numeric_tag(tags, "replaygain_track_peak")
         tracks.append(track)
     found = {**found, "tracks": tracks, 'analysis_version': ANALYSIS_VERSION}
-    gain = (FLAC(files[0]).get("replaygain_album_gain") or [""])[0].split() if files else []
-    found["lufs"] = round(-18 - float(gain[0]), 1) if gain else None
-    if config.MUSIC_PATH in album_dir.parents:
+    found["lufs"] = _loudness(FLAC(files[0]), "replaygain_album_gain") if files else None
+    if persist and own_store and config.MUSIC_PATH in album_dir.parents:
         store = {path: p for path, p in store.items()
                  if p.get("audio") != key or (config.MUSIC_PATH / path).is_dir()}
         store[_rel(album_dir)] = found
-        if own_store:
-            _save(store)
+        _save(store)
     return found
 
 

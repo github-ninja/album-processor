@@ -28,7 +28,6 @@ import hashlib
 import json
 import logging
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -84,9 +83,11 @@ log = logging.getLogger(__name__)
 
 # Only one processor run at a time — runs move files around in downloads
 _processor_lock = asyncio.Lock()
+_children: set[asyncio.subprocess.Process] = set()
+_stopping = False
 
 # Suspected upconverts awaiting a decision: short id → processor report entry.
-# Kept in memory only; after a restart /newalbum simply asks again.
+# Rebuilt from durable import jobs after a restart.
 _pending: dict[str, dict] = {}
 
 # Albums just processed, offered for Anton's opinion: short id → library path
@@ -105,64 +106,71 @@ def _is_allowed(update: Update) -> bool:
 # Processor helpers
 # ---------------------------------------------------------------------------
 
+def _signal_child(proc: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def _request_shutdown(app: Application) -> None:
+    global _stopping
+    _stopping = True
+    loop = asyncio.get_running_loop()
+    for proc in tuple(_children):
+        _signal_child(proc, signal.SIGTERM)
+
+        def kill_if_active(child: asyncio.subprocess.Process) -> None:
+            if child in _children:
+                _signal_child(child, signal.SIGKILL)
+
+        loop.call_later(5, kill_if_active, proc)
+    app.stop_running()
+
+
 async def _run_processor(args: list[str], env_overrides: dict[str, str],
                          exclusive: bool = True, on_output=None) -> subprocess.CompletedProcess:
-    """Run album_processor.py; *exclusive* runs (everything that moves files) go one at a time."""
+    """Run the CLI, streaming progress when requested and reaping cancelled children."""
     env = {**os.environ, **env_overrides}
+
+    async def read_stream(stream: asyncio.StreamReader, name: str) -> bytes:
+        if on_output is None:
+            return await stream.read()
+        chunks = []
+        while line := await stream.readline():
+            chunks.append(line)
+            await on_output(name, line.decode(errors="replace").rstrip())
+        return b"".join(chunks)
 
     async def run() -> subprocess.CompletedProcess:
         command = [sys.executable, PROCESSOR_SCRIPT, *args]
+        if _stopping:
+            return subprocess.CompletedProcess(command, -signal.SIGTERM, "", "Бот завершает работу.")
         proc = await asyncio.create_subprocess_exec(
             *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             env=env, start_new_session=True)
-        if on_output is not None:
-            async def read_stream(stream, name):
-                chunks = []
-                while line := await stream.readline():
-                    chunks.append(line)
-                    await on_output(name, line.decode(errors="replace").rstrip())
-                return b"".join(chunks)
-
-            try:
-                stdout, stderr = await asyncio.gather(
-                    read_stream(proc.stdout, "stdout"), read_stream(proc.stderr, "stderr"))
-            except asyncio.CancelledError:
-                if proc.returncode is None:
-                    try:
-                        os.killpg(proc.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        await asyncio.wait_for(proc.wait(), timeout=5)
-                    except asyncio.TimeoutError:
-                        try:
-                            os.killpg(proc.pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                        await proc.wait()
-                raise
-            return subprocess.CompletedProcess(command, await proc.wait(),
-                                               stdout.decode(errors="replace"),
-                                               stderr.decode(errors="replace"))
+        _children.add(proc)
+        if _stopping:
+            _signal_child(proc, signal.SIGTERM)
+        streams = [asyncio.create_task(read_stream(proc.stdout, "stdout")),
+                   asyncio.create_task(read_stream(proc.stderr, "stderr"))]
         try:
-            stdout, stderr = await proc.communicate()
-        except asyncio.CancelledError:
-            if proc.returncode is None:
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    await asyncio.wait_for(proc.communicate(), timeout=5)
-                except asyncio.TimeoutError:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    await proc.communicate()
+            stdout, stderr = await asyncio.gather(*streams)
+            return subprocess.CompletedProcess(command, await proc.wait(),
+                                               stdout.decode(errors="replace"), stderr.decode(errors="replace"))
+        except BaseException:
+            for stream in streams:
+                stream.cancel()
+            await asyncio.gather(*streams, return_exceptions=True)
+            _signal_child(proc, signal.SIGTERM)
+            try:
+                await asyncio.wait_for(proc.communicate(), timeout=5)
+            except TimeoutError:
+                _signal_child(proc, signal.SIGKILL)
+                await proc.communicate()
             raise
-        return subprocess.CompletedProcess(command, proc.returncode,
-                                           stdout.decode(errors="replace"), stderr.decode(errors="replace"))
+        finally:
+            _children.discard(proc)
 
     if not exclusive:
         return await run()
@@ -289,18 +297,25 @@ async def _ask_about_deferred(message: Message, entries: list[dict]) -> None:
             await message.reply_text(text, parse_mode="HTML", reply_markup=_decision_keyboard(key))
 
 
-def _delete_album(path: Path) -> None:
-    """Delete an album folder from downloads, plus its artist folder if left empty."""
+def _resolve_download(entry: dict, delete: bool) -> None:
+    from albumproc import jobs
     from albumproc.files import processor_lock
 
     with processor_lock():
-        from albumproc import jobs
+        path = Path(entry["path"])
+        job = jobs.open_job(path)
+        jobs.check_decision(job, entry)
+        if not delete:
+            jobs.discard(job, 'kept')
+            return
         downloads = DOWNLOADS_PATH.resolve()
         target = path.resolve()
         if downloads not in target.parents:
             raise ValueError(f"путь вне папки загрузок: {path}")
-        shutil.rmtree(target)
-        jobs.discard(jobs.open_job(target), 'deleted')
+        job.update(status='deleting')
+        jobs.save(job)
+        jobs.finish(job, 'deleted')
+        jobs.discard(job, 'deleted')
         parent = target.parent
         if parent != downloads and not any(parent.iterdir()):
             parent.rmdir()
@@ -621,17 +636,6 @@ async def on_upconvert_decision(update: Update, context: ContextTypes.DEFAULT_TY
 
     path = Path(entry["path"])
     name = html.escape(_display_path(path))
-    if entry.get('source_manifest') is not None:
-        from albumproc import jobs
-        current = jobs.open_job(path)
-        if (current.get('status') != 'waiting' or current.get('deferred') != entry
-                or jobs.manifest(path) != entry['source_manifest']):
-            _pending.pop(key, None)
-            await query.answer()
-            await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text('⌛ Загрузка или запрос изменились — запустите /newalbum ещё раз.')
-            return
-
     if action == "del":
         await query.answer()
         await query.edit_message_reply_markup(reply_markup=_confirm_delete_keyboard(key))
@@ -671,31 +675,25 @@ async def on_upconvert_decision(update: Update, context: ContextTypes.DEFAULT_TY
         await _edit_text(query, f"⚠️ Папка уже не существует: {name}")
         return
 
-    if action == "keep":
-        from albumproc import jobs
-        from albumproc.files import processor_lock
-        with processor_lock():
-            job = jobs.open_job(path)
-            jobs.discard(job, 'kept')
-        await _edit_text(query, f"⏭ Оставлен в загрузках: {name}")
-
-    elif action == "delyes":
+    if action in {"keep", "delyes"}:
+        delete = action == "delyes"
         try:
-            await asyncio.to_thread(_delete_album, path)
+            await asyncio.to_thread(_resolve_download, entry, delete)
         except Exception as exc:
-            log.exception("Failed to delete %s", path)
-            await _edit_text(query, f"❌ Не удалось удалить {name}:\n{html.escape(str(exc))}")
+            log.exception("Failed to resolve download decision for %s", path)
+            await _edit_text(query, f"❌ {name}: {html.escape(str(exc))}")
             return
-        log.info("Deleted suspected upconvert: %s", path)
-        await _edit_text(query, f"🗑 Удалён: {name}")
+        await _edit_text(query, f"{'🗑 Удалён' if delete else '⏭ Оставлен в загрузках'}: {name}")
 
     elif action == "proc":
         replace = entry.get("kind") == "replace"
         await _edit_text(query, f"⏳ {'Заменяю' if replace else 'Обрабатываю'}: {name}")
         log.info("Processing %s on user request: %s", entry.get("kind", "upconvert"), path)
-        # An approved upconvert may still turn out to be in the library: then it is asked about again
-        await _process(query.message, [str(path)],
-                       {"UPCONVERT_ACTION": "warn", **({"REPLACE_ACTION": "replace"} if replace else {})})
+        with tempfile.TemporaryDirectory() as tmp:
+            decision = Path(tmp) / "decision.json"
+            decision.write_text(json.dumps(entry, ensure_ascii=False), encoding="utf-8")
+            await _process(query.message, ["--import-decision", str(decision)],
+                           {"UPCONVERT_ACTION": UPCONVERT_ACTION})
 
 
 # ---------------------------------------------------------------------------
@@ -947,6 +945,9 @@ COMMANDS = [
 async def _on_start(app: Application) -> None:
     """Set the "/" menu — in the owner's chat only, strangers get no menu — and start the release poller."""
     from albumproc import jobs
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _request_shutdown, app)
     for entry in jobs.pending():
         if Path(entry['path']).is_dir():
             _pending[_decision_key(entry)] = entry

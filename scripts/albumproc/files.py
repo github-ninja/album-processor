@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import time
+import tempfile
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,6 +26,8 @@ def processor_lock():
     """One CLI writer per library, including commands started outside Telegram."""
     import fcntl
 
+    if config.state_dir().is_symlink():
+        raise ValueError("state directory must be inside the library")
     config.state_dir().mkdir(parents=True, exist_ok=True)
     with (config.state_dir() / "processor.lock").open("a") as handle:
         try:
@@ -86,23 +89,19 @@ def library_album_dirs() -> list[Path]:
     return sorted(
         album
         for artist_dir in config.MUSIC_PATH.iterdir()
-        if artist_dir.is_dir() and not artist_dir.name.startswith((".", "$"))
+        if artist_dir.is_dir() and not artist_dir.is_symlink() and not artist_dir.name.startswith((".", "$"))
         for album in artist_dir.iterdir()
-        if album.is_dir() and not album.name.startswith(".") and album_audio_files(album)
+        if album.is_dir() and not album.is_symlink() and not album.name.startswith(".") and album_audio_files(album)
     )
 
 
 def safe_rename(src: Path, dst: Path) -> Path:
-    """Rename *src* → *dst*, falling back to copy+delete on PermissionError."""
+    """Rename on the same filesystem without replacing an existing path."""
     if src == dst:
         return src
     if dst.exists() or dst.is_symlink():
         raise FileExistsError(f"destination already exists: {dst}")
-    try:
-        src.rename(dst)
-    except PermissionError:
-        shutil.copy2(src, dst)
-        src.unlink()
+    src.rename(dst)
     return dst
 
 
@@ -153,6 +152,8 @@ def find_or_create_artist_dir(artist: str) -> Path:
     "Arms And Sleepers"; otherwise the (not yet created) new path is returned.
     """
     folder = artist_folder_name(artist)
+    if not folder or folder.startswith((".", "$")):
+        raise ValueError("artist does not have a usable library folder name")
     if config.MUSIC_PATH.exists():
         existing = find_dir_case_insensitive(config.MUSIC_PATH, folder)
         if existing:
@@ -185,17 +186,43 @@ def remove_non_music_files(album_dir: Path) -> None:
             log.info("  🗑️  Removed directory: %s/", item.name)
 
 
-def move_aside(path: Path) -> Path:
-    """
-    Move *path* out of the library into the hidden state folder instead of
-    deleting it, so an overwritten album can still be recovered.
-    """
+def archive_path(path: Path) -> Path:
+    """Reserve a name under the library lock before moving a version aside."""
     target = config.state_dir() / "replaced" / _RUN_STAMP / path.relative_to(config.MUSIC_PATH)
-    if target.exists():
-        target = target.with_name(f"{target.name}-{uuid.uuid4().hex[:12]}")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(path), str(target))
+    if target.exists() or target.is_symlink():
+        target = target.with_name(f"{target.name}-{uuid.uuid4().hex}")
+    if not target.parent.resolve().is_relative_to(config.MUSIC_PATH.resolve()):
+        raise ValueError("archive path escapes the library")
     return target
+
+
+def move_aside(path: Path) -> Path:
+    target = archive_path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return safe_rename(path, target)
+
+
+def restore_backups(backups: list[list[str]]) -> None:
+    for original, archive in reversed(backups):
+        original, archive = Path(original), Path(archive)
+        if archive.exists() or archive.is_symlink():
+            safe_rename(archive, original)
+
+
+def publish_album(work: Path, destination: Path, backups: list[list[str]]) -> None:
+    """Publish a prepared directory; the caller saves the move list first."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    moved = []
+    try:
+        for original, archive in backups:
+            archive = Path(archive)
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            safe_rename(Path(original), archive)
+            moved.append([original, str(archive)])
+        safe_rename(work, destination)
+    except Exception:
+        restore_backups(moved)
+        raise
 
 
 def normalize_permissions(root: Path) -> None:
@@ -205,6 +232,20 @@ def normalize_permissions(root: Path) -> None:
         mode = config.DIR_MODE if path.is_dir() else config.FILE_MODE
         if path.stat().st_mode & 0o777 != mode:
             os.chmod(path, mode)
+
+
+def write_json(path: Path, payload: dict, *, sort_keys: bool = False) -> None:
+    """Replace a state file atomically after writing its complete JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                     prefix=f".{path.name}-", delete=False) as stream:
+        temp = Path(stream.name)
+        try:
+            json.dump(payload, stream, ensure_ascii=False, indent=1, sort_keys=sort_keys)
+            stream.close()
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
 
 
 def journal(entry: dict) -> None:

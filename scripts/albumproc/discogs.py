@@ -5,6 +5,7 @@ and canonical artist spelling.
 
 import logging
 from collections import Counter
+from collections.abc import Callable
 import re
 import ssl
 import time
@@ -14,7 +15,7 @@ import requests
 
 from . import config
 from .names import (
-    TITLE_MIN_SIMILARITY, clean_folder_name, clean_text, is_various_artists, strip_artist_prefix, title_similarity,
+    TITLE_MIN_SIMILARITY, clean_folder_name, clean_text, is_generic_title, is_various_artists, normalize_title, strip_artist_prefix, title_similarity,
 )
 
 log = logging.getLogger(__name__)
@@ -75,11 +76,17 @@ def api_get(url: str, **kwargs) -> Optional[dict]:
         resp.close()
         time.sleep(delay)
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
+    if not isinstance(data, dict):
+        raise ValueError("Discogs response is not a JSON object")
+    return data
 
 
 def search(**params) -> list[dict]:
-    return (api_get(_SEARCH_URL, params=params) or {}).get("results", [])
+    results = (api_get(_SEARCH_URL, params=params) or {}).get("results", [])
+    if not isinstance(results, list) or any(not isinstance(item, dict) for item in results):
+        raise ValueError("Discogs search response has an invalid results list")
+    return results
 
 
 def strip_disambiguation(name: str) -> str:
@@ -110,27 +117,25 @@ def clean_title(title: str) -> str:
     return clean_text(clean_text(title).split(" = ")[0])
 
 
-def _pick_result(results: list[dict], album_title: str) -> Optional[dict]:
-    """
-    The search result whose title best matches *album_title*, or None when
-    nothing is close enough — a wrong album is never used.  Results are
-    titled "Artist - Title"; ties go to results that belong to a master
-    release, and singles lose ties to albums ("Do You Know Squarepusher?").
-    """
-    best, best_score = None, 0.0
+def _rank_results(results: list[dict], album_title: str, artist: str = "") -> list[dict]:
+    """Rank viable title matches; edition preferences only break title ties."""
+    ranked = []
     for result in results:
-        result_title = result.get("title", "")
-        if " - " in result_title:
-            result_title = result_title.split(" - ", 1)[1]
-        similarity = title_similarity(album_title, result_title)
-        if similarity < _ALBUM_MIN_SIMILARITY:
+        raw = result.get("title") or ""
+        stripped = strip_artist_prefix(raw, artist) if artist else raw
+        title = stripped if stripped != raw else raw.split(" - ", 1)[-1]
+        if bool(_VERSION_GROUP_RE.search(album_title)) != bool(_VERSION_GROUP_RE.search(title)):
             continue
-        score = (similarity
-                 + (0.01 if result.get("master_id") else 0)
-                 - (0.02 if "Single" in (result.get("format") or []) else 0))
-        if score > best_score:
-            best, best_score = result, score
-    return best
+        similarity = title_similarity(album_title, title)
+        if similarity >= _ALBUM_MIN_SIMILARITY:
+            rank = (normalize_title(album_title) == normalize_title(title), similarity,
+                    "Single" not in (result.get("format") or []), bool(result.get("master_id")))
+            ranked.append((rank, result))
+    return [result for _, result in sorted(ranked, key=lambda pair: pair[0], reverse=True)]
+
+
+def _pick_result(results: list[dict], album_title: str, artist: str = "") -> Optional[dict]:
+    return next(iter(_rank_results(results, album_title, artist)), None)
 
 
 def _audio_version(version: dict) -> bool:
@@ -161,31 +166,41 @@ def tracklist_agreement(local_titles: list[str], tracklist: list[dict]) -> tuple
     # API order is not guaranteed. Sort complete numeric/disc or vinyl-side
     # positions before measuring sequence agreement.
     positions = [t.get("position", "").strip() for t in entries]
-    side_positions = [re.fullmatch(r"([A-Z]+)(\d+)", p, re.IGNORECASE) for p in positions]
-    if all(side_positions):
-        remote = [title for _, title in sorted(
-            ( (m.group(1).upper(), int(m.group(2))), t["title"] )
-            for m, t in zip(side_positions, entries))]
+    sides = vinyl_track_order(entries)
+    if sides:
+        remote = [entries[index]["title"] for index in sides]
     else:
         numeric_positions = [_position(p) for p in positions]
         if all(track is not None for _, track in numeric_positions):
-            remote = [title for _, title in sorted(
-                ((position, t["title"]) for position, t in zip(numeric_positions, entries)),
-                key=lambda item: item[0])]
-    hits = sum(any(title_similarity(a, b) >= TITLE_MIN_SIMILARITY for b in remote) for a in local)
-    precision = hits / len(local)
-    recall = sum(any(title_similarity(b, a) >= TITLE_MIN_SIMILARITY for a in local) for b in remote) / len(remote)
-    overlap = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+            remote = [title for _, title in sorted(zip(numeric_positions, remote), key=lambda item: item[0])]
+    matches = [[index for index, title in enumerate(remote)
+                if title_similarity(local_title, title) >= TITLE_MIN_SIMILARITY]
+               for local_title in local]
+    assigned: dict[int, int] = {}
 
-    # Longest common subsequence tolerates bonus tracks while preserving the
-    # ordering of the album itself. A set-only score treated a fully shuffled
-    # tracklist as a perfect match and could overwrite every local title.
+    def assign(index: int, visited: set[int]) -> bool:
+        for candidate in matches[index]:
+            if candidate in visited:
+                continue
+            visited.add(candidate)
+            if candidate not in assigned or assign(assigned[candidate], visited):
+                assigned[candidate] = index
+                return True
+        return False
+
+    # Match each remote track at most once, even with repeated or ambiguous titles.
+    for index in range(len(local)):
+        assign(index, set())
+    overlap = 2 * len(assigned) / (len(local) + len(remote))
+
+    # Longest common subsequence preserves order while allowing bonus tracks.
     rows = [0] * (len(remote) + 1)
-    for local_title in local:
+    for matches_for_track in matches:
         previous = 0
-        for index, remote_title in enumerate(remote, 1):
+        matching = set(matches_for_track)
+        for index in range(1, len(rows)):
             saved = rows[index]
-            if title_similarity(local_title, remote_title) >= TITLE_MIN_SIMILARITY:
+            if index - 1 in matching:
                 rows[index] = previous + 1
             else:
                 rows[index] = max(rows[index], rows[index - 1])
@@ -203,148 +218,165 @@ def _track_entries(release: dict) -> list[dict]:
     ]
 
 
+def _album_from_release(release: dict, master_match: dict, results: list[dict],
+                        track_titles: list[str]) -> Optional[dict]:
+    title = clean_title(release.get("title", ""))
+    year = release.get("year") or ""
+
+    release_master_id = release.get("master_id")
+    searched_master_id = master_match.get("id")
+    if release_master_id and searched_master_id and str(release_master_id) != str(searched_master_id):
+        log.warning("  ⚠️  Master search returned %s but matched release belongs to %s; using the release link.",
+                    searched_master_id, release_master_id)
+    master_id = release_master_id
+    master = {}
+    if master_id:
+        log.info("  📥 Fetching master release…")
+        master_url = master_match.get("resource_url") if str(searched_master_id) == str(master_id) else None
+        master = api_get(master_url or f"{_API}/masters/{master_id}") or {}
+        master_title = clean_title(master.get("title", ""))
+        if master_title and title_similarity(master_title, title) < TITLE_MIN_SIMILARITY:
+            # Mis-linked master in Discogs data — trust the release itself
+            log.info("  ℹ️  Master release %r doesn't match — ignored.", master_title)
+            master, master_id = {}, None
+        elif _VERSION_GROUP_RE.search(title) and not _VERSION_GROUP_RE.search(master_title):
+            log.info("  ℹ️  %r is another version of %r — its own title and year kept.", title, master_title)
+            master, master_id = {}, None
+        else:
+            title = master_title or title
+            # The master's own year is occasionally a later edition's; the
+            # earliest version seen in the search results is more reliable
+            years = [
+                int(r["year"]) for r in results
+                if r.get("master_id") == master_id and str(r.get("year", "")).isdigit()
+                and not _PREVIEW_FORMATS & set(r.get("format") or [])
+            ]
+            if master.get("year"):
+                years.append(int(master["year"]))
+            year = min(years) if years else year
+
+    track_release = release if _release_is_audio(release) else {}
+    best_score = tracklist_score(track_titles, release.get("tracklist", [])) if track_release else -1.0
+    if master_id and best_score < 1 and (track_titles or not track_release):
+        versions = api_get(f"{_API}/masters/{master_id}/versions",
+                           params={"per_page": 100, "page": 1}) or {}
+        candidates = [v for v in versions.get("versions", []) if _audio_version(v) and v.get("id")]
+        candidates.sort(key=lambda v: (0 if any(x in " ".join(v.get("major_formats") or []).casefold()
+                                                      for x in ("cd", "file")) else 1,
+                                       0 if "album" in v.get("format", "").casefold() else 1))
+        for version in candidates[:5]:
+            if str(version.get("id")) == str(release.get("id")):
+                continue
+            candidate = api_get(f"{_API}/releases/{version['id']}") or {}
+            if not candidate or not _release_is_audio(candidate):
+                continue
+            score = tracklist_score(track_titles, candidate.get("tracklist", []))
+            if score > best_score:
+                best_score, track_release = score, candidate
+            if best_score == 1:
+                break
+
+    if not title or not track_release:
+        return None
+    return {
+        "release_id": track_release.get("id"),
+        "master_id": master_id,
+        "title": title,
+        "artist": join_artists(master.get("artists") or release.get("artists", [])),
+        "year": str(year) if year else "",
+        "genre": "; ".join(master.get("styles") or master.get("genres")
+                              or track_release.get("styles") or track_release.get("genres") or []),
+        "release_types": release_types(track_release),
+        "tracklist": _track_entries(track_release),
+    }
+
+
 def fetch_album(artist: Optional[str], raw_title: str, *, diagnostics: Optional[dict] = None,
-                track_titles: Optional[list[str]] = None) -> Optional[dict]:
-    """
-    Look up an album by *artist* and a (possibly messy) folder name or title.
-
-    The title and year come from the master release: it carries the
-    canonical title ("Lemodie", not "Lemodie (15th Anniversary Edition)") and
-    the original release year (earliest non-promo version).  Tracklist,
-    artists and genre come from the matched release.  Costs 2-4 requests.
-
-    Returns {"release_id", "master_id", "title", "artist", "year", "genre",
-    "release_types", "tracklist"} or None when
-    Discogs is unreachable or has no confident match.
-    """
-    if diagnostics is not None:
-        diagnostics['status'] = 'unmatched'
+                track_titles: Optional[list[str]] = None,
+                accept: Callable[[dict], bool] | None = None) -> Optional[dict]:
+    """Try distinct ranked candidates until an acceptable audio edition is found."""
     cleaned = clean_folder_name(raw_title)
-    # "Artist - Title" folder names would otherwise search for "Artist Artist - Title"
     if artist:
         cleaned = clean_folder_name(strip_artist_prefix(cleaned, artist))
-
-    searches = []
-    if artist:
-        searches.append({"artist": artist, "release_title": cleaned})
+    searches = ([{"artist": artist, "release_title": cleaned}] if artist else [])
     searches.append({"q": f"{artist} {cleaned}" if artist else cleaned})
-    if artist:
-        # Last resort for typos in the downloaded title ("Beats & Peaces II"):
-        # all of the artist's releases, matched by title similarity
-        searches.append({"artist": artist, "per_page": 100})
+    fallback = [{"artist": artist, "per_page": 100}] if artist else []
+    master_match = {}
+    seen = set()
+    rejected = unavailable = False
 
-    # Establish album identity from the master first. A release search alone can
-    # prefer a DVD/remaster and leak that edition's title into the library.
-    master_match = None
-    try:
-        for params in searches[:2]:
-            master_match = _pick_result(search(**{"type": "master", "per_page": 10, **params}), cleaned)
-            if master_match and master_match.get("id"):
-                break
-            master_match = None
-    except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
-        log.warning("⚠️  Discogs master search unavailable: %s", exc)
-        if diagnostics is not None:
-            diagnostics['status'] = 'unavailable'
+    def check(url: str, results: list[dict]) -> Optional[dict]:
+        nonlocal rejected, unavailable
+        if url in seen:
+            return None
+        seen.add(url)
+        try:
+            release = api_get(url) or {}
+            album = _album_from_release(release, master_match, results, track_titles or [])
+            if album is not None and (accept is None or accept(album)):
+                return album
+            rejected = True
+        except (requests.RequestException, ValueError, AttributeError, TypeError, KeyError) as exc:
+            unavailable = True
+            log.warning("Discogs could not load candidate details: %s", exc)
         return None
 
-    try:
-        match, results = None, []
-        for params in searches:
-            log.info("🔍 Querying Discogs: %s", ", ".join(f"{k}={v!r}" for k, v in params.items()))
-            results = search(**{"type": "release", "per_page": 10, **params})
-            match = _pick_result(results, cleaned)
-            if match:
+    for params in searches:
+        try:
+            master_match = _pick_result(search(**{"type": "master", "per_page": 10, **params}),
+                                        cleaned, artist or "") or {}
+            if master_match.get("id"):
                 break
-        if not match or not match.get("resource_url"):
-            log.info("  ℹ️  No matching Discogs release found.")
-            return None
+        except (requests.RequestException, ValueError, AttributeError, TypeError) as exc:
+            unavailable = True
+            log.warning("Discogs master search failed: %s", exc)
+            break
 
-        log.info("  📥 Fetching release details…")
-        release = api_get(match["resource_url"]) or {}
-        title = clean_title(release.get("title", ""))
-        year = release.get("year") or ""
+    album = None
+    best = -1.0
+    informative = [title for title in track_titles or [] if not is_generic_title(title)]
+    for params in searches + fallback:
+        try:
+            results = search(**{"type": "release", "per_page": 20, **params})
+            ranked = _rank_results(results, cleaned, artist or "")
+        except (requests.RequestException, ValueError, AttributeError, TypeError) as exc:
+            unavailable = True
+            log.warning("Discogs release search failed: %s", exc)
+            break
+        # Repeated hits from a more specific query do not use up this query's budget.
+        urls = list(dict.fromkeys(r["resource_url"] for r in ranked
+                                  if r.get("resource_url") and r["resource_url"] not in seen))
+        for url in urls[:5]:
+            candidate = check(url, results)
+            if candidate is None:
+                continue
+            score = tracklist_score(informative, candidate["tracklist"]) if informative else 1.0
+            if score > best:
+                album, best = candidate, score
+            if best == 1:
+                break
+        if best > 0:
+            break
 
-        release_master_id = release.get("master_id")
-        searched_master_id = (master_match or {}).get("id")
-        if release_master_id and searched_master_id and str(release_master_id) != str(searched_master_id):
-            log.warning("  ⚠️  Master search returned %s but matched release belongs to %s; using the release link.",
-                        searched_master_id, release_master_id)
-        master_id = release_master_id or searched_master_id
-        master = {}
-        if master_id:
-            log.info("  📥 Fetching master release…")
-            master_url = (master_match or {}).get("resource_url") if str(searched_master_id) == str(master_id) else None
-            master = api_get(master_url or f"{_API}/masters/{master_id}") or {}
-            master_title = clean_title(master.get("title", ""))
-            if master_title and title_similarity(master_title, title) < TITLE_MIN_SIMILARITY:
-                # Mis-linked master in Discogs data — trust the release itself
-                log.info("  ℹ️  Master release %r doesn't match — ignored.", master_title)
-            else:
-                if _VERSION_GROUP_RE.search(title) and not _VERSION_GROUP_RE.search(master_title):
-                    log.info("  ℹ️  %r is another version of %r — its own title kept.", title, master_title)
-                else:
-                    title = master_title or title
-                # The master's own year is occasionally a later edition's; the
-                # earliest version seen in the search results is more reliable
-                years = [
-                    int(r["year"]) for r in results
-                    if r.get("master_id") == master_id and str(r.get("year", "")).isdigit()
-                    and not _PREVIEW_FORMATS & set(r.get("format") or [])
-                ]
-                if master.get("year"):
-                    years.append(int(master["year"]))
-                year = min(years) if years else year
+    if album is None and master_match.get("id"):
+        try:
+            master = api_get(f"{_API}/masters/{master_match['id']}") or {}
+            if release_id := master.get("main_release"):
+                album = check(f"{_API}/releases/{release_id}", [])
+        except (requests.RequestException, ValueError, AttributeError, TypeError, KeyError) as exc:
+            unavailable = True
+            log.warning("Discogs main release lookup failed: %s", exc)
 
-        track_release = release
-        if master_id and track_titles:
-            versions = api_get(f"{_API}/masters/{master_id}/versions",
-                               params={"per_page": 100, "page": 1}) or {}
-            candidates = [v for v in versions.get("versions", []) if _audio_version(v) and v.get("id")]
-            candidates.sort(key=lambda v: (0 if any(x in " ".join(v.get("major_formats") or []).casefold()
-                                                          for x in ("cd", "file")) else 1,
-                                           0 if "album" in v.get("format", "").casefold() else 1))
-            if _release_is_audio(release):
-                best_score = tracklist_score(track_titles, release.get("tracklist", []))
-            else:
-                # Never fall back to a video key release when no audio edition
-                # could be fetched; keep the master identity and an empty list.
-                track_release, best_score = {"id": release.get("id")}, -1.0
-            for version in candidates[:5]:
-                if str(version.get("id")) == str(release.get("id")):
-                    continue
-                candidate = api_get(f"{_API}/releases/{version['id']}") or {}
-                score = tracklist_score(track_titles, candidate.get("tracklist", []))
-                if score > best_score:
-                    best_score, track_release = score, candidate
-
-        if diagnostics is not None:
-            diagnostics['status'] = 'matched'
-        return {
-            "release_id": track_release.get("id"),
-            "master_id": master_id,
-            "title": title,
-            "artist": join_artists(master.get("artists") or release.get("artists", [])),
-            "year": str(year) if year else "",
-            "genre": "; ".join(master.get("styles") or master.get("genres")
-                                  or track_release.get("styles") or track_release.get("genres") or []),
-            "release_types": release_types(track_release),
-            "tracklist": _track_entries(track_release),
-        }
-    except requests.Timeout:
-        log.warning("⚠️  Discogs request timed out.")
-    except requests.HTTPError as exc:
-        log.warning("⚠️  Discogs HTTP error: %s", exc)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("⚠️  Discogs error: %s", exc)
     if diagnostics is not None:
-        diagnostics['status'] = 'unavailable'
-    return None
+        diagnostics["status"] = ("matched" if album else "unavailable" if unavailable else
+                                 "rejected" if rejected else "unmatched")
+    return album
 
 
-def lookup_album(artist: Optional[str], title: str, *, track_titles: Optional[list[str]] = None) -> tuple[Optional[dict], str]:
+def lookup_album(artist: Optional[str], title: str, *, track_titles: Optional[list[str]] = None,
+                 accept: Callable[[dict], bool] | None = None) -> tuple[Optional[dict], str]:
     diagnostics = {}
-    album = fetch_album(artist, title, diagnostics=diagnostics, track_titles=track_titles)
+    album = fetch_album(artist, title, diagnostics=diagnostics, track_titles=track_titles, accept=accept)
     return album, diagnostics.get('status', 'matched' if album else 'unmatched')
 
 
@@ -488,31 +520,53 @@ def _credited(track: dict, role: str) -> list[str]:
             if role.lower() in e.get("role", "").lower() and e.get("name")]
 
 
-def _position(position: str) -> tuple[int, Optional[int]]:
-    """(disc, track) of a Discogs position: "2-03"/"CD2-3"/"2.3" → (2, 3), "A1"/"7" → (1, 1)/(1, 7)."""
-    m = re.match(r"^(?:CD)?(\d+)[-.](\d+)$", position.strip(), re.IGNORECASE)
-    if m:
-        return int(m.group(1)), int(m.group(2))
-    digits = re.sub(r"[^0-9]", "", position)
-    return 1, int(digits) if digits else None
+def _position(position: str) -> tuple[int, int | None]:
+    """Parse a numeric position, optionally prefixed by a disc number."""
+    text = position.strip()
+    match = re.fullmatch(r"(?:CD)?([1-9]\d*)[-.]0*([1-9]\d*)", text, re.I)
+    if match:
+        return int(match[1]), int(match[2])
+    return 1, int(text) if re.fullmatch(r"0*[1-9]\d*", text) else None
 
 
-def tracklist_index_at_position(tracklist: list[dict], track_num: int, disc: int = 1) -> Optional[int]:
-    """Unique tracklist index for an explicit numeric Discogs position, or None."""
+def vinyl_track_order(tracklist: list[dict]) -> list[int]:
+    """Sequential vinyl sides and tracks, or an empty list if ambiguous."""
+    sides = {}
+    for index, entry in enumerate(tracklist):
+        match = re.fullmatch(r"([A-Z])([1-9]\d*)", entry.get("position", "").strip(), re.I)
+        if not match:
+            return []
+        tracks = sides.setdefault(match[1].upper(), {})
+        number = int(match[2])
+        if number in tracks:
+            return []
+        tracks[number] = index
+    order = []
+    for index, (side, tracks) in enumerate(sorted(sides.items())):
+        if side != chr(ord("A") + index) or sorted(tracks) != list(range(1, len(tracks) + 1)):
+            return []
+        order.extend(tracks[number] for number in sorted(tracks))
+    return order
+
+
+def tracklist_index_at_position(tracklist: list[dict], track_num: int, disc: int = 1) -> int | None:
+    """Unique index for an explicit numeric Discogs position."""
     matches = [i for i, entry in enumerate(tracklist)
                if _position(entry.get("position", "")) == (disc, track_num)]
     return matches[0] if len(matches) == 1 else None
 
 
 def resolve_track_title(tracklist: list[dict], track_num: int, fallback_index: int,
-                        disc: int = 1) -> Optional[str]:
-    """
-    Discogs title for *track_num* on *disc* ("2-03" positions; "A1"/"B2" use
-    their digits) or, failing that, the *fallback_index*-th (0-based) entry.
-    """
-    for entry in tracklist:
-        if _position(entry.get("position", "")) == (disc, track_num):
-            return entry.get("title") or None
-    if 0 <= fallback_index < len(tracklist):
-        return tracklist[fallback_index].get("title") or None
-    return None
+                        disc: int = 1, *, allow_unpositioned: bool = False) -> str | None:
+    """Use explicit positions, or the sequence of a complete unpositioned list."""
+    index = tracklist_index_at_position(tracklist, track_num, disc)
+    if index is None and disc == 1:
+        order = vinyl_track_order(tracklist)
+        if order and 1 <= track_num <= len(order):
+            index = order[track_num - 1]
+        elif (allow_unpositioned and 0 <= fallback_index < len(tracklist)
+              and all(not entry.get("position") for entry in tracklist)):
+            index = fallback_index
+    if index is None:
+        return None
+    return tracklist[index].get("title") or None

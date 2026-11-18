@@ -4,6 +4,8 @@ services:
     image: album-processor
     container_name: album-processor
     restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
     # The uid:gid that owns your downloads and music folders
     user: "1000:1000"
     env_file: .env

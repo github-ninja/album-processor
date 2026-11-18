@@ -1,13 +1,15 @@
 """Durable import records and private workspaces; no audio is edited in downloads."""
 import hashlib
 import json
-import os
 import logging
 import shutil
 import time
+import uuid
 from pathlib import Path
 
 from . import config
+from .files import safe_rename, write_json
+from .names import name_key
 
 
 def directory() -> Path:
@@ -15,16 +17,16 @@ def directory() -> Path:
 
 
 def save(job: dict) -> None:
-    directory().mkdir(parents=True, exist_ok=True)
-    path = directory() / (job['id'] + '.json')
-    temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(job, ensure_ascii=False, indent=1), encoding='utf-8')
-    os.replace(temporary, path)
+    write_json(directory() / (job['id'] + '.json'), job)
 
 
 def manifest(path: Path) -> list:
-    return [[str(f.relative_to(path)), f.stat().st_size, f.stat().st_mtime_ns]
-            for f in sorted(path.rglob('*')) if f.is_file()]
+    snapshot = []
+    for file in sorted(path.rglob("*")):
+        if file.is_file():
+            info = file.stat()
+            snapshot.append([str(file.relative_to(path)), info.st_size, info.st_mtime_ns])
+    return snapshot
 
 
 def pending() -> list[dict]:
@@ -45,22 +47,27 @@ def recoverable_sources() -> list[Path]:
     for path in directory().glob('*.json'):
         try:
             job = json.loads(path.read_text(encoding='utf-8'))
-            if (job.get('status') == 'committing' and Path(job['destination']).is_dir()
-                    and not Path(job['work']).exists()):
+            if (job.get('status') in {'committing', 'deleting'}):
                 sources.append(Path(job['source']))
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             continue
     return sources
 
 
-def identity_for(audio: list[str]) -> dict | None:
+def identity_for(audio: list[str], *, artist: str | None = None, title: str | None = None) -> dict | None:
     if not audio:
         return None
     for path in sorted(directory().glob('*.json')):
         try:
             job = json.loads(path.read_text(encoding='utf-8'))
             if job.get('status') == 'done' and job.get('measured', {}).get('audio') == audio:
-                return job.get('metadata')
+                metadata = job.get("metadata") or {}
+                if artist and name_key(metadata.get("artist", "")) != name_key(artist):
+                    continue
+                if title and name_key(metadata.get("album", "")) != name_key(title):
+                    continue
+                if metadata:
+                    return metadata
         except (OSError, ValueError, AttributeError):
             continue
     return None
@@ -74,7 +81,7 @@ def open_job(source: Path) -> dict:
         job = json.loads(path.read_text(encoding='utf-8'))
         if job['source'] != str(source):
             raise ValueError('import job identity conflict')
-        if job.get('status') != 'done' or not source.is_dir():
+        if job.get('status') not in {'done', 'deleted'} or not source.is_dir():
             return job
         # A later download may reuse this path; keep the previous album's identity.
         path.rename(path.with_name(f'{identifier}-done-{time.time_ns()}.json'))
@@ -82,6 +89,14 @@ def open_job(source: Path) -> dict:
            'work': str(config.state_dir() / 'work' / identifier / source.name)}
     save(job)
     return job
+
+
+def check_decision(job: dict, entry: dict) -> None:
+    source = Path(job['source'])
+    if (job.get('status') != 'waiting' or job.get('deferred') != entry
+            or not source.is_dir() or source.is_symlink()
+            or manifest(source) != entry.get('source_manifest')):
+        raise ValueError('Загрузка или запрос изменились — запустите /newalbum ещё раз.')
 
 
 def prepare(job: dict) -> Path:
@@ -94,7 +109,7 @@ def prepare(job: dict) -> Path:
     job.update(status='copying', source_manifest=current)
     save(job)
     work.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, work)
+    shutil.copytree(source, work, symlinks=True)
     if manifest(source) != current or manifest(work) != current:
         raise RuntimeError('download changed while copying; retry when it is complete')
     job.update(status='processing')
@@ -112,13 +127,34 @@ def discard(job: dict, status: str) -> None:
     save(job)
 
 
-def finish(job: dict) -> None:
+def finish(job: dict, status: str = 'done') -> None:
     source = Path(job['source'])
-    if source.is_dir():
-        if manifest(source) != job['source_manifest']:
-            raise RuntimeError('source changed after preparation; imported copy retained, source not deleted')
-        shutil.rmtree(source)
-    job.update(status='done', deferred=None)
+    if source.is_symlink():
+        raise ValueError('source became a symbolic link')
+    if 'cleanup' not in job and source.is_dir():
+        job['cleanup'] = {'name': f".albumproc-cleanup-{uuid.uuid4().hex}"}
+        save(job)
+    if cleanup := job.get('cleanup'):
+        name = cleanup['name']
+        if Path(name).name != name or not name.startswith('.albumproc-cleanup-'):
+            raise ValueError('invalid source cleanup path')
+        trash = source.with_name(name)
+        if trash.is_symlink():
+            raise ValueError('source cleanup path is a symbolic link')
+        if not cleanup.get('verified'):
+            if not trash.exists() and source.is_dir():
+                if manifest(source) != job['source_manifest']:
+                    raise RuntimeError('source changed after preparation; imported copy retained, source not deleted')
+                safe_rename(source, trash)
+            if trash.exists() and manifest(trash) != job['source_manifest']:
+                if not source.exists():
+                    safe_rename(trash, source)
+                raise RuntimeError('source changed during cleanup; source retained')
+            cleanup['verified'] = True
+            save(job)
+        if trash.exists():
+            shutil.rmtree(trash)
+    job.update(status=status, deferred=None)
     save(job)
     parent = Path(job['work']).parent
     if parent.is_dir() and not any(parent.iterdir()):

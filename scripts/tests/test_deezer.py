@@ -58,7 +58,7 @@ class DeezerDownloader(TempLibraryCase):
                 mock.patch.object(deezer_dl, "_track_count", return_value=2):
             self.assertEqual(deezer_dl.download(2), album)
         self.assertEqual([c.args[1] for c in request.call_args_list].count("http://deezer:5000/download"), 2)
-        self.assertFalse((self.base / "incomplete" / "Arovane - Lilies").exists())
+        self.assertTrue((self.base / "incomplete" / "Arovane - Lilies" / "01 - Arovane Pulse.flac").is_file())
 
     def test_empty_or_partial_download_is_not_an_album(self):
         make_flac(self.base / "albums" / "Arovane - Lilies" / "01 - Arovane Pulse.flac")

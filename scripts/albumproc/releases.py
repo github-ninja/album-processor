@@ -23,7 +23,6 @@ State (music/.album_processor/releases.json):
 import datetime
 import json
 import logging
-import os
 import re
 import time
 from pathlib import Path
@@ -32,20 +31,28 @@ from typing import Optional
 import requests
 
 from . import config
-from .files import library_album_dirs
-from .names import album_identity, clean_folder_name, is_various_artists, name_key, title_similarity
+from .files import library_album_dirs, write_json
+from .names import album_identity, clean_folder_name, is_various_artists, name_key
 
 log = logging.getLogger(__name__)
 
 _API = "https://api.deezer.com"
 _PAUSE = 0.12                      # Deezer allows 50 requests per 5 s
-_FIRST_LOOKBACK_DAYS = 90          # the very first check reports this far back
+_RECENT_DAYS = 90                 # also catches late catalogue additions
 CHECK_HOUR = 10                    # scheduled checks run from this hour on (TZ)
 SCHEDULES = ("daily", "weekly", "monthly")
-# Not a new album: reissues, remix and live albums, collections
-_NOT_NEW_RE = re.compile(
+# Recognize edition qualifiers without excluding albums whose titles merely
+# contain words like "live", "versions" or "collection".
+_DECORATION_RE = re.compile(r"\s*[\[(]([^\])]+)[\])]\s*$|\s+(?:[-–—:]\s+)?(reworked|reimagined)$", re.I)
+_EDITION_WORD_RE = re.compile(
     r"\b(?:remix(?:es|ed)?|live|deluxe|remaster(?:ed)?|anniversary|expanded|edition|compilation|"
-    r"collection|best of|greatest hits|instrumentals?|versions|rework(?:ed|s)?|reimagined)\b", re.IGNORECASE)
+    r"collection|best of|greatest hits|instrumentals?|versions|rework(?:ed|s)?|reimagined)\b", re.I)
+_LIVE_OR_HITS_RE = re.compile(r"^(?:live(?:$| (?:at|in|from)\b)|the best of\b|best of\b|greatest hits\b)", re.I)
+
+
+def _is_edition(title: str) -> bool:
+    tail = _DECORATION_RE.search(title)
+    return bool(_LIVE_OR_HITS_RE.match(title) or (tail and _EDITION_WORD_RE.search(tail[0])))
 
 
 def state_path() -> Path:
@@ -61,11 +68,7 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    path = state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
+    write_json(state_path(), state, sort_keys=True)
 
 
 def _get(url: str, **params) -> dict:
@@ -73,6 +76,8 @@ def _get(url: str, **params) -> dict:
     resp = requests.get(url, params=params, timeout=20)
     resp.raise_for_status()
     data = resp.json()
+    if not isinstance(data, dict):
+        raise ValueError("Deezer response is not a JSON object")
     if "error" in data:
         raise RuntimeError(f"Deezer: {data['error']}")
     return data
@@ -93,8 +98,8 @@ def library_artists() -> dict[str, list[str]]:
 
 def _in_library(title: str, owned: list[str]) -> bool:
     """Whether a Deezer title is one of *owned*, edition tails aside ("… (15th Anniversary Edition)")."""
-    bare = clean_folder_name(title).lower()
-    return any(title_similarity(bare, own) >= 0.9 for own in owned)
+    bare = name_key(clean_folder_name(title))
+    return bool(bare) and any(bare == name_key(own) for own in owned)
 
 
 # ---------------------------------------------------------------------------
@@ -113,9 +118,16 @@ GENRES = {
 def albums_of(artist_id: int) -> list[dict]:
     """Every release on the artist's Deezer page (the list is not in date order)."""
     releases, url, params = [], f"{_API}/artist/{artist_id}/albums", {"limit": 100}
+    seen = set()
     while url:
+        if url in seen or not url.startswith(f"{_API}/"):
+            raise ValueError("invalid Deezer album pagination link")
+        seen.add(url)
         data = _get(url, **params)
-        releases += data.get("data", [])
+        page = data.get("data")
+        if not isinstance(page, list) or any(not isinstance(item, dict) for item in page):
+            raise ValueError("invalid Deezer album page")
+        releases.extend(page)
         url, params = data.get("next"), {}
     return releases
 
@@ -148,7 +160,8 @@ def find_artist(name: str, owned: list[str]) -> Optional[dict]:
     for candidate in candidates:
         owned_albums = owned_on_deezer(candidate["id"], name, owned, albums_of(candidate["id"]))
         if owned_albums:
-            return {"id": candidate["id"], "genres": sorted({r.get("genre_id") for r in owned_albums})}
+            genres = {r.get("genre_id") for r in owned_albums}
+            return {"id": candidate["id"], "genres": sorted(g for g in genres if type(g) is int and g > 0)}
     return {"id": candidates[0]["id"], "genres": []} if candidates else None
 
 
@@ -161,12 +174,20 @@ def new_albums(releases: list[dict], owned: list[str], since: str, today: str, n
     An album is "sure" in one of *genres* (the artist's albums in the library);
     otherwise it may be a namesake's and carries the reason why.
     """
-    found, seen = [], set()
-    for r in sorted(releases, key=lambda r: r.get("release_date", "")):
-        title, date = r.get("title", ""), r.get("release_date", "")
+    found = []
+    seen = {name_key(r["title"]) for r in releases
+            if r.get("id") in notified and isinstance(r.get("title"), str)}
+    for r in sorted(releases, key=lambda r: r.get("release_date") or ""):
+        title, date = r.get("title"), r.get("release_date")
+        if type(r.get("id")) is not int or not isinstance(title, str) or not isinstance(date, str):
+            continue
+        try:
+            datetime.date.fromisoformat(date)
+        except ValueError:
+            continue
         key = name_key(title)
         if (r.get("record_type") != "album" or not since <= date <= today or r.get("id") in notified
-                or key in seen or _NOT_NEW_RE.search(title) or _in_library(title, owned)):
+                or key in seen or _is_edition(title) or _in_library(title, owned)):
             continue
         seen.add(key)  # explicit / clean and regional versions of one album
         if not genres:
@@ -188,11 +209,12 @@ def check(today: Optional[datetime.date] = None) -> tuple[list[dict], dict]:
     """New albums of every library artist since the last check; updates the state."""
     today = today or datetime.date.today()
     state = load_state()
-    since = state["last_check"] or (today - datetime.timedelta(days=_FIRST_LOOKBACK_DAYS)).isoformat()
+    recent = (today - datetime.timedelta(days=_RECENT_DAYS)).isoformat()
+    since = min(state["last_check"] or recent, recent)
     notified = set(state["notified"])
     artists = library_artists()
     news = []
-    failed = False
+    failed = []
     for name, owned in sorted(artists.items()):
         try:
             # Not found, or found but not verified yet: look again (new albums may appear on Deezer)
@@ -205,14 +227,14 @@ def check(today: Optional[datetime.date] = None) -> tuple[list[dict], dict]:
                                     artist["genres"]):
                 news.append({**album, "artist": name})
         except Exception as exc:  # noqa: BLE001 — one artist's failure must not end the check
-            failed = True
+            failed.append(name)
             log.warning("⚠️  %s: %s", name, exc)
     state["artists"] = {name: state["artists"].get(name) for name in artists}
     state["notified"] = sorted(notified | {a["id"] for a in news})
     if not failed:
         state["last_check"] = today.isoformat()
     save_state(state)
-    return news, state
+    return news, {**state, "failed_artists": failed}
 
 
 def is_due(state: dict, now: datetime.datetime) -> bool:
@@ -264,10 +286,14 @@ def report(news: list[dict], state: dict, quiet: bool = False) -> str:
     The news as a message: the sure albums, then the ones that may be a
     namesake's; without news an empty string when *quiet* (scheduled checks).
     """
+    failed = state.get("failed_artists", [])
+    warning = f"⚠️ Не удалось проверить исполнителей: {len(failed)}." if failed else ""
     if not news:
         if quiet:
             return ""
         tracked = sum(1 for artist in state["artists"].values() if artist)
+        if warning:
+            return f"Проверка завершилась частично. {warning}"
         return f"Новых альбомов нет (проверено исполнителей: {tracked})."
     ordered = sorted(news, key=lambda a: (a["date"], a["artist"]))
     sure = [_line(a) for a in ordered if not a["doubt"]]
@@ -277,6 +303,8 @@ def report(news: list[dict], state: dict, quiet: bool = False) -> str:
         parts.append("🆕 Новые альбомы ваших исполнителей:\n" + "\n".join(sure))
     if doubtful:
         parts.append("❓ Возможно, тёзки — проверьте по ссылке:\n" + "\n".join(doubtful))
+    if warning:
+        parts.append(warning)
     return "\n\n".join(parts)
 
 

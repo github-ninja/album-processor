@@ -7,6 +7,25 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+
+- Import records publication and archives before moving library albums, and can
+  resume interrupted source cleanup. Approval checks the download and compared
+  library versions under the worker lock.
+- Maintenance stages edits per album, rejects stale snapshots and keeps the
+  complete original in the archive. Same-title folders with different track
+  programmes are no longer proposed as duplicates.
+- Discogs searches past rejected results, counts repeated track matches once
+  and keeps alternate recordings separate from their master. Artwork upgrades
+  require matching artwork.
+- Deezer checks a fresh file snapshot, retains quarantined copies and revisits
+  recent release dates for late catalogue additions. Release words in ordinary
+  titles no longer exclude an album from discovery.
+- Converted and split audio is checked for incomplete decoding. Known lower
+  source rates no longer trigger upconvert prompts from resampling. Passports
+  count a flat top across analysis blocks and ignore malformed loudness tags.
+- The bot terminates its worker process groups on shutdown. Public Compose
+  enables an init process and gives the worker time to exit.
+
 - `/fixlibrary` streams album-by-album progress and Discogs output to container logs,
   updates its Telegram status periodically and sends a heartbeat while planning.
 - Discogs identification now searches the master first for album identity, then

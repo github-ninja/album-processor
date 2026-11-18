@@ -36,7 +36,8 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   resampling, TPDF dither); a 16/44.1 source is copied bit for bit.
 - Detects lossy→lossless upconverts by spectral analysis (MP3/AAC low-pass
   cutoff) and asks what to do — with a spectrogram and *Process / Keep / Delete*
-  buttons.
+  buttons. A cutoff alone cannot identify the codec. Known low-rate sources
+  are excluded from alerts caused by resampling.
 - Removes non-music files (logs, cues, scans, playlists) and empty folders.
 
 **Metadata from Discogs**
@@ -53,7 +54,8 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   album identity; a matching audio edition supplies the tracklist, so a DVD
   key release cannot rename an audio album or win on one-sided track overlap.
   The matched release's master link takes priority over a conflicting title
-  search; edition scoring checks track order. `/fixlibrary all` does not replace
+  search. Rejected candidates do not end the search. Edition scoring matches
+  each track once and checks its order. `/fixlibrary all` does not replace
   album identity from a partial tracklist or one that strongly conflicts with
   the local track order.
 - Another version of an album — *Instrumentals*, *Remixes* — stays a separate
@@ -74,7 +76,7 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
 - Artist, title, album, album artist, date, genre, track/disc numbers and totals.
 - `RELEASETYPE` (album / ep / single + compilation, soundtrack, dj-mix, remix)
   — Navidrome groups an artist's page by it; `COMPILATION=1` for Various Artists.
-- ReplayGain 2.0: track and album gain (EBU R128, −18 LUFS) with **true** peaks,
+- ReplayGain 2.0 for FLAC: track and album gain (EBU R128, −18 LUFS) with **true** peaks,
   so a player's clipping prevention also covers inter-sample overs.
 - Nothing else: no comments, no lyrics, no leftovers from the source.
 
@@ -82,15 +84,15 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
 - `Cover.jpg`, 1000×1000 JPEG, in the album folder and a copy in every disc folder
   (`CD1/`, `CD2/`…) for software that only looks next to the tracks; the same image
   embedded in every track. A disc's own cover put in its folder by hand is kept.
-- Fetched from Deezer when it has this exact album, else the download's own art;
-  never upscaled; a small cover is upgraded only when Deezer has the same image larger.
+- The download's own art is kept when available. Deezer fills missing art for
+  the exact album or supplies a larger copy of the same image. Art is never upscaled.
 
 **Mastering passport — `/quality`**
 - A named query measures only the matching albums. Cached measurements follow
   renamed tracks and refresh loudness tags without remeasuring the audio.
 - Flat tops are a warning sign, not proof of audible clipping; absence of flat tops
   does not prove absence of distortion. Anton's opinions preserve this distinction.
-- Every album is measured once: DR (the TT DR Meter method of
+- An album's FLAC tracks are measured and cached: DR (the TT DR Meter method of
   dr.loudness-war.info), flat tops left by hard clipping, loudness and true peak.
 - A grade per album: 🟢 open, 🟡 dense or traces of clipping, 🔴 crushed master —
   shown in the import report with the worst track named.
@@ -107,7 +109,8 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   EPs, reissues, remix or live albums, nor what you already have.
 - Off by default: `/newreleases` checks now; `/newreleases daily | weekly | monthly`
   turns on automatic checks (at 10:00, `TZ`), which stay silent without news;
-  `/newreleases stop` turns them off, `/newreleases status` shows the state.
+  `/newreleases stop` turns them off, `/newreleases status` shows the state. The
+  check revisits the past 90 days to find albums added with an older release date.
 - Namesakes cannot be told apart for sure (Deezer merges same-named artists),
   so the message has two parts: albums in the genre of your albums by that artist,
   and *may be a namesake* — with the reason — instead of hiding anything.
@@ -134,7 +137,8 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   Every Deezer import, including an explicit CLI path, must match the exact album's
   track count from Deezer. Incomplete folders go to `deezer/incomplete/`; unknown
   album identity or an unavailable track count blocks import and retains the source.
-  Album IDs are retained in import jobs; existing web downloads need their queue
+  Quarantined copies remain available after a later successful download.
+  Album IDs and verified file snapshots are retained in jobs. Existing web downloads need their queue
   entry to identify the album. If that entry was lost on restart, download the exact
   album again through `/deezer` to establish its identity.
 
@@ -144,7 +148,8 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   streamed to Telegram and container logs, including the current album and elapsed time.
 - Fixes names, tag hygiene (invisible characters, genre spelling, totals),
   artist spelling across the library, covers, audio format, missing ReplayGain
-  and release types, duplicates (the same album under another year or case).
+  and release types. Same-title folders under another year or case are proposed
+  as duplicates when their ordered track programmes match.
 - `/fixlibrary all` also re-checks every album title and, when the matching
   Discogs audio edition has a complete tracklist with unique numeric positions—or a
   complete, sequential vinyl-side order—matching the library, canonicalises track
@@ -158,7 +163,8 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   previous library album; a failure before publication keeps the download.
 - Import records and pending decisions survive bot restarts. `/newalbum` retries
   failed preparation from the original download and finishes cleanup after an
-  interrupted publication. Buttons reject downloads changed since the question.
+  interrupted publication. Decisions also check that the library copies shown
+  for replacement are still current.
 - CLI commands that change library state share a per-library process lock, including
   manual runs. A broken album does not abort the rest of the import queue.
 - Track renames reject collisions and handle swaps without overwriting audio;
@@ -166,7 +172,8 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   leaves the source image intact if writing or tagging fails.
 - Library plans reject stale metadata, missing tracks, path escapes and existing
   destination folders before applying changes. Lossless conversion and renaming
-  are handled together; totals reflect the actual tracks and discs.
+  are handled together on a private copy. The entire original goes to the archive
+  on success. Totals reflect the actual tracks and discs.
 - An unreachable downloader is treated as potentially busy. Download completion
   is checked against distinct files actually present, not only the task's file list.
 - One user only: the bot ignores everyone but `ALLOWED_ID`.
@@ -258,8 +265,8 @@ To update: `git pull && docker compose up -d --build`.
 | `DOWNLOADS_PATH` | | `/mnt/data/downloads` | Downloads folder inside the container |
 | `MUSIC_PATH` | | `/mnt/data/music` | Library folder inside the container |
 | `DISCOGS_TOKEN` | | — | Discogs personal token (higher rate limit) |
-| `UPCONVERT_ACTION` | | `ask` | Suspected upconverts: `ask` (bot asks), `warn` (process anyway), `skip` (leave in downloads) |
-| `REPLACE_ACTION` | | `ask` | An album already in the library: `ask` (bot compares passports and asks), `replace` (swap it in) |
+| `UPCONVERT_ACTION` | | Bot: `ask`; CLI: `warn` | Suspected upconverts: `ask` (bot asks), `warn` (process anyway), `skip` (leave in downloads) |
+| `REPLACE_ACTION` | | Bot: `ask`; CLI: `replace` | An album already in the library: `ask` (bot compares passports and asks), `replace` (swap it in) |
 | `GEMINI_API_KEY` | | — | Enables Anton's opinions; free key from [aistudio.google.com](https://aistudio.google.com) |
 | `GEMINI_MODEL` | | `gemini-3.6-flash` | Any Gemini text model |
 | `GEMINI_FALLBACK_MODEL` | | `gemini-3.5-flash-lite` | Asked when the main model is overloaded (HTTP 503) or silent |
@@ -319,7 +326,11 @@ python album_processor.py --releases [check|status|daily|weekly|monthly|stop]   
 Mastering passports carry an analysis version: changing the algorithm invalidates
 older measurements when requested. Import results are passed to the bot as JSON,
 with separate Discogs states for no match, rejected match and service failure.
-Library maintenance still applies changes in place and needs a backup before bulk edits.
+If a maintenance swap is interrupted, the next CLI worker checks the pending
+record in `music/.album_processor/maintenance/` and restores or finishes it. Keep
+an independent backup before bulk edits and allow space for archived originals.
+
+See [architecture](docs/ARCHITECTURE.md) for the data flow and recovery limits.
 
 ## Development
 

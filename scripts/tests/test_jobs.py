@@ -1,7 +1,7 @@
 """Staged imports, restart recovery and source preservation."""
 from pathlib import Path
 from unittest import mock
-from albumproc import config, covers, discogs, jobs, pipeline, quality, upconvert
+from albumproc import config, covers, discogs, files, jobs, pipeline, quality, upconvert
 from tests.helpers import TempLibraryCase, make_flac
 REAL_FETCH = discogs.fetch_album
 
@@ -116,3 +116,80 @@ class ImportJobs(TempLibraryCase):
         with self.assertRaisesRegex(RuntimeError, 'published album changed'):
             pipeline.process_album(self.candidate, pipeline.RunState())
         self.assertTrue(self.source.is_dir())
+
+    def test_archives_are_recorded_before_any_move(self):
+        old = self.music / 'A' / '1999 - Album'
+        track = make_flac(old / 'old.flac')
+        expected = track.read_bytes()
+        original = files.safe_rename
+
+        def interrupt(source, target):
+            result = original(source, target)
+            if source == old:
+                raise KeyboardInterrupt()
+            return result
+
+        with mock.patch.object(files, 'safe_rename', side_effect=interrupt), self.assertRaises(KeyboardInterrupt):
+            pipeline.process_album(self.candidate, pipeline.RunState())
+        job = jobs.open_job(self.source)
+        self.assertEqual(job['status'], 'committing')
+        self.assertFalse(old.exists())
+        self.assertEqual((Path(job['backups'][0][1]) / track.name).read_bytes(), expected)
+        with mock.patch.object(config, 'REPLACE_ACTION', 'ask'):
+            self.assertIsNone(pipeline.process_album(self.candidate, pipeline.RunState()))
+        self.assertEqual(track.read_bytes(), expected)
+
+    def test_cleanup_can_resume_after_partial_deletion_and_preserve_a_new_download(self):
+        original = jobs.shutil.rmtree
+
+        def interrupt(path):
+            if Path(path).name.startswith('.albumproc-cleanup-'):
+                (path / 'one.flac').unlink()
+                raise KeyboardInterrupt()
+            return original(path)
+
+        with mock.patch.object(jobs.shutil, 'rmtree', side_effect=interrupt), self.assertRaises(KeyboardInterrupt):
+            pipeline.process_album(self.candidate, pipeline.RunState())
+        self.assertEqual(jobs.recoverable_sources(), [self.source])
+        self.source.mkdir()
+        fresh = self.source / 'new.txt'
+        fresh.write_text('new download')
+        self.assertTrue(pipeline.process_album(self.candidate, pipeline.RunState()))
+        self.assertEqual(fresh.read_text(), 'new download')
+        self.assertFalse(list(self.source.parent.glob('.albumproc-cleanup-*')))
+
+    def test_stale_decision_does_not_approve_changed_source(self):
+        old = self.music / 'A' / '1999 - Album'
+        make_flac(old / 'old.flac')
+        with mock.patch.object(config, 'REPLACE_ACTION', 'ask'):
+            state = pipeline.RunState()
+            self.assertIsNone(pipeline.process_album(self.candidate, state))
+            (self.source / 'new.txt').touch()
+            with self.assertRaisesRegex(ValueError, 'изменились'):
+                pipeline.process_album(self.candidate, pipeline.RunState(), state.deferred[0])
+        self.assertTrue(old.exists())
+
+    def test_replace_decision_is_for_the_library_version_shown(self):
+        old = self.music / 'A' / '1999 - Album'
+        make_flac(old / 'old.flac')
+        with mock.patch.object(config, 'REPLACE_ACTION', 'ask'):
+            state = pipeline.RunState()
+            self.assertIsNone(pipeline.process_album(self.candidate, state))
+            (old / 'new.txt').touch()
+            other = pipeline.RunState()
+            self.assertIsNone(pipeline.process_album(self.candidate, other, state.deferred[0]))
+            self.assertNotEqual(state.deferred[0]['copies'], other.deferred[0]['copies'])
+            self.assertTrue(pipeline.process_album(self.candidate, pipeline.RunState(), other.deferred[0]))
+        self.assertFalse(self.source.exists())
+
+    def test_audio_nested_in_an_empty_disc_folder_is_retained(self):
+        extra = make_flac(self.source / 'CD2' / 'unexpected' / 'extra.flac')
+        original = extra.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'unsupported subfolders'):
+            pipeline.process_album(self.candidate, pipeline.RunState())
+        self.assertEqual(extra.read_bytes(), original)
+
+    def test_refuses_to_copy_a_parent_of_the_library(self):
+        with self.assertRaises(ValueError):
+            pipeline.process_album(pipeline.AlbumCandidate(self.tmp, None), pipeline.RunState())
+        self.assertFalse(jobs.directory().exists())

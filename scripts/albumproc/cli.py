@@ -32,7 +32,7 @@ from .files import processor_lock
 log = logging.getLogger("albumproc")
 
 
-def _process(paths: list[str]) -> int:
+def _process(paths: list[str], decision: dict | None = None) -> int:
     if paths:
         candidates = [pipeline.candidate_from_path(Path(p)) for p in paths]
     else:
@@ -47,9 +47,10 @@ def _process(paths: list[str]) -> int:
     log.info("📋 Found %d album(s) to process.\n", len(candidates))
     state = pipeline.RunState()
     results = []
+    options = {"decision": decision} if decision is not None else {}
     for candidate in candidates:
         try:
-            results.append(pipeline.process_album(candidate, state))
+            results.append(pipeline.process_album(candidate, state, **options))
         except Exception:
             log.exception("❌ Failed to process album: %s", candidate.path)
             results.append(False)
@@ -152,6 +153,9 @@ def _dispatch(argv: list[str]) -> int:
     # These print a message for the bot on stdout: their log goes to stderr
     logging.basicConfig(level=logging.INFO, format="%(message)s",
                         stream=sys.stderr if argv[:1] in (["--releases"], ["--opinion"], ["--deezer"]) else sys.stdout)
+    if argv[:1] == ["--import-decision"]:
+        entry = json.loads(Path(argv[1]).read_text(encoding="utf-8"))
+        return _process([entry["path"]], entry)
     if argv and argv[0] == "--fix-library":
         return _fix_library(argv[1:])
     if argv and argv[0] == "--releases":
@@ -166,15 +170,21 @@ def _dispatch(argv: list[str]) -> int:
     if argv and argv[0] == "--quality":
         print("\n".join(quality.library_report(" ".join(argv[1:]))))
         return 0
+    if argv and argv[0].startswith("-"):
+        raise ValueError(f"unknown option: {argv[0]}; see --help")
     return _process(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] in (["-h"], ["--help"]):
+        print(__doc__.strip())
+        return 0
     try:
         if argv[:2] == ["--deezer", "search"]:
             return _dispatch(argv)
         with processor_lock():
+            library.recover_maintenance()
             return _dispatch(argv)
     except Exception as exc:
         log.error("❌ %s", exc)

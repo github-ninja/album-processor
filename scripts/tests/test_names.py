@@ -194,7 +194,7 @@ class DiscogsPositions(unittest.TestCase):
         self.assertEqual(discogs._position("2-03"), (2, 3))
         self.assertEqual(discogs._position("CD2-3"), (2, 3))
         self.assertEqual(discogs._position("7"), (1, 7))
-        self.assertEqual(discogs._position("B2"), (1, 2))
+        self.assertEqual(discogs._position("B2"), (1, None))
         tracklist = [{"position": "1-1", "title": "Jericho"}, {"position": "2-1", "title": "Your Love"}]
         self.assertEqual(discogs.resolve_track_title(tracklist, 1, 0, disc=2), "Your Love")
 

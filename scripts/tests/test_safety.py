@@ -10,7 +10,7 @@ from mutagen.flac import FLAC
 from mutagen.id3 import ID3, APIC
 from mutagen.mp4 import MP4
 
-from albumproc import cli, config, cue, deezer_dl, discogs, files, library, opinion, quality, releases, tags, upconvert
+from albumproc import cli, config, cue, deezer_dl, discogs, files, jobs, library, opinion, quality, releases, tags, upconvert
 from tests.helpers import TempLibraryCase, make_flac, make_image, make_m4a
 
 
@@ -235,6 +235,52 @@ class LibrarySafety(TempLibraryCase):
         self.assertTrue((album / 'one.flac').exists())
         self.assertEqual(list(outside.iterdir()), [])
 
+    def test_failed_maintenance_leaves_original_byte_for_byte(self):
+        album = self.album()
+        track = album / 'one.flac'
+        before = track.read_bytes()
+        entry = self.entry(album, new_album='Other', new_year='2001',
+                           file_renames=[['one.flac', 'new.flac']])
+        with mock.patch.object(library, 'rename_files', side_effect=OSError('disk full')):
+            self.assertEqual(library.apply_library_fixes([entry]), 1)
+        self.assertEqual(track.read_bytes(), before)
+        self.assertFalse(list(config.state_dir().glob('replaced/**/*.*')))
+
+    def test_maintenance_recovers_on_both_sides_of_publication(self):
+        album = self.album()
+        track = album / 'one.flac'
+        before = track.read_bytes()
+        entry = self.entry(album, new_album='Other', new_year='2001',
+                           file_renames=[['one.flac', 'new.flac']])
+        original = files.safe_rename
+
+        for after_publication in (False, True):
+            with self.subTest(after_publication=after_publication):
+                def interrupt(source, target):
+                    result = original(source, target)
+                    if (target == album if after_publication else source == album):
+                        raise KeyboardInterrupt()
+                    return result
+
+                with mock.patch.object(files, 'safe_rename', side_effect=interrupt), self.assertRaises(KeyboardInterrupt):
+                    library.apply_library_fixes([entry])
+                self.assertTrue((config.state_dir() / 'maintenance' / 'pending.json').is_file())
+                library.recover_maintenance()
+                self.assertFalse((config.state_dir() / 'maintenance' / 'pending.json').exists())
+                if not after_publication:
+                    self.assertEqual(track.read_bytes(), before)
+                else:
+                    archives = list(config.state_dir().glob('replaced/**/one.flac'))
+                    self.assertEqual([path.read_bytes() for path in archives], [before])
+                    self.assertEqual(FLAC(album / 'new.flac')['album'], ['Other'])
+
+    def test_plan_rejects_a_track_added_after_review(self):
+        album = self.album()
+        entry = self.entry(album, manifest=jobs.manifest(album), new_album='Other')
+        make_flac(album / 'two.flac')
+        self.assertEqual(library.apply_library_fixes([entry]), 1)
+        self.assertEqual(FLAC(album / 'one.flac')['album'], ['Album'])
+
     def test_totals_are_computed_from_tracks_not_trusted_from_old_tags(self):
         album = self.album()
         fixes = library._plan_tag_fixes(album, files.album_audio_files(album), {}, {}, None)
@@ -264,6 +310,31 @@ class DownloadPaths(TempLibraryCase):
 
 
 class BotLifecycle(unittest.IsolatedAsyncioTestCase):
+    async def test_shutdown_terminates_an_active_worker(self):
+        import bot
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "worker.py"
+            script.write_text("import time\nprint('started', flush=True)\ntime.sleep(60)\n")
+            started = asyncio.Event()
+
+            async def on_output(_, line):
+                if line == "started":
+                    started.set()
+
+            app = mock.Mock()
+            with mock.patch.object(bot, "PROCESSOR_SCRIPT", str(script)), \
+                    mock.patch.object(bot, "_stopping", False):
+                task = asyncio.create_task(bot._run_processor([], {}, exclusive=False, on_output=on_output))
+                await asyncio.wait_for(started.wait(), timeout=5)
+                bot._request_shutdown(app)
+                result = await asyncio.wait_for(task, timeout=10)
+            self.assertEqual(result.returncode, -15)
+            app.stop_running.assert_called_once_with()
+            self.assertFalse(bot._children)
+
     async def test_poller_is_cancelled_and_awaited_on_stop(self):
         import bot
         task = asyncio.create_task(asyncio.sleep(3600))

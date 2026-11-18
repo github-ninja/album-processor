@@ -16,6 +16,7 @@ jobs:
           cache: pip
           cache-dependency-path: scripts/requirements.txt
       - run: pip install -r scripts/requirements.txt
+      - run: python -m pip check
       - name: Run tests (network is mocked)
         working-directory: scripts
         run: python -B -m unittest discover -s tests -t . -v

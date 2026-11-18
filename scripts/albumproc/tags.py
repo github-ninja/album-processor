@@ -21,6 +21,7 @@ from mutagen.flac import FLAC, Picture
 from mutagen.id3 import APIC, ID3, ID3NoHeaderError, TALB, TCMP, TCON, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK, TXXX
 from mutagen.mp4 import MP4, MP4Cover
 
+from .files import disc_dir_number
 from .names import split_multi_value
 
 log = logging.getLogger(__name__)
@@ -121,6 +122,14 @@ def read_tags(file_path: Path) -> dict[str, str]:
     except Exception as exc:  # noqa: BLE001
         log.debug("  Could not read tags from %s: %s", file_path.name, exc)
     return result
+
+
+def track_disc(path: Path, album_dir: Path) -> int:
+    """An explicit disc folder defines grouping; flat albums use the disc tag."""
+    if path.parent != album_dir and (number := disc_dir_number(path.parent)):
+        return number
+    tagged = read_tags(path)["disc_number"]
+    return int(tagged) if tagged.isdigit() and int(tagged) > 0 else 1
 
 
 def album_tag_values(files: list[Path]) -> tuple[str, str]:
