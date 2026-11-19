@@ -613,12 +613,15 @@ def plan_library_fixes(check_all: bool = False) -> list[dict]:
                 if f.suffix.lower() != ".flac" and not audioformat.needs_conversion(f):
                     continue
                 current = _flac_values(f)
-                old = current.get("albumartist", [])
-                new = [discogs.canonical_credited_artist(value, found) for value in old]
-                if new != old:
-                    rel = str(f.relative_to(album_dir))
-                    tag_fixes = [fix for fix in tag_fixes if fix[0] != rel or fix[1] != "albumartist"]
-                    tag_fixes.append([rel, "albumartist", old, new])
+                rel = str(f.relative_to(album_dir))
+                for field in ("artist", "albumartist"):
+                    old = current.get(field, [])
+                    previous = next((fix[3] for fix in tag_fixes if fix[0] == rel and fix[1] == field), old)
+                    new = list(dict.fromkeys(discogs.canonical_credited_artist(value, found) for value in previous))
+                    if new != previous:
+                        tag_fixes = [fix for fix in tag_fixes if fix[0] != rel or fix[1] != field]
+                        if new != old:
+                            tag_fixes.append([rel, field, old, new])
         cover = _plan_cover(album_dir, files, artist, title["new_album"])
         convert = [[str(f.relative_to(album_dir)), audioformat.describe_format(f)]
                    for f in files if audioformat.needs_conversion(f)]

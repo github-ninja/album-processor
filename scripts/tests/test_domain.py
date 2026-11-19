@@ -39,9 +39,10 @@ class DiscogsDecisions(TempLibraryCase):
         self.assertIn(["one.flac", "albumartist", ["Carl Finlow"], ["Carl A. Finlow"]], plan[0]["tag_fixes"])
         with mock.patch.object(library.replaygain, "tag_album"):
             self.assertEqual(library.apply_library_fixes(plan), 0)
-        target = self.music / "Carl A. Finlow" / "2024 - Plasmoids" / "01. Carl Finlow - Track.flac"
+        target = self.music / "Carl A. Finlow" / "2024 - Plasmoids" / "01. Carl A. Finlow - Track.flac"
         self.assertTrue(target.is_file())
         self.assertEqual(tags.read_tags(target)["album_artist"], "Carl A. Finlow")
+        self.assertEqual(tags.read_tags(target)["artist"], "Carl A. Finlow")
 
     def test_track_credits_use_the_edition_artist_names(self):
         performers = [{"name": "Dominic Angus", "anv": "Dom"}, {"name": "Ryme Tyme"}]

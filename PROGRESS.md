@@ -87,3 +87,7 @@ On 2026-11-19, Discogs identified the credited name Carl Finlow as an artist nam
 ## Maintenance backup cleanup
 
 The owner requested removal of temporary backups after successful operations and explicitly authorized deleting the previous Plasmoids backup. Its 12 audio identities were verified against the published album before removal. New maintenance transactions remove their temporary backup only after validating the published manifest. The pending record remains until cleanup finishes and legacy pending records retain their earlier behavior. Replaced editions and duplicates continue to be archived.
+
+## Track artist variations
+
+The owner observed separate artist entries in a Subsonic client because Plasmoids retained its release-specific ARTIST variation after ALBUMARTIST was canonicalized. Import and full maintenance now resolve confirmed release artist variations in both fields, retaining other artist credits and separate Discogs alias entities. The targeted plan changes 12 track artist tags and corresponding filenames.

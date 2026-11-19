@@ -50,8 +50,8 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
   genres from Discogs styles.
 - Artist names spelled as the Discogs artist entity ("VIMES" → "Vimes"),
   aliases followed when the tracks agree (a store's "Carl Finlow" → "Silicon Scally").
-- A release's Discogs artist name variation resolves to its artist entity for
-  album artist and library folders. Distinct alias entities keep their own names.
+- A release's Discogs artist name variation resolves to its artist entity in
+  track and album artist tags and library folders. Distinct alias entities keep their own names.
 - Transliterated Latin letters in artist names match their original spelling
   ("Trentemoller" = "Trentemøller"), including artist prefixes in album folders;
   tags and file names keep the spelling from Discogs.

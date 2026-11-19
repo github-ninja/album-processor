@@ -49,6 +49,7 @@ class AlbumInfo:
     release_id: Optional[int] = None
     master_id: Optional[int] = None
     lookup_status: str = 'unmatched'
+    artist_variations: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -221,6 +222,7 @@ def resolve_album_info(candidate: AlbumCandidate) -> Optional[AlbumInfo]:
             from_discogs=True,
             release_id=found.get('release_id'), master_id=found.get('master_id'),
             lookup_status=lookup_status,
+            artist_variations=found.get('artist_variations') or {},
         )
         log.info("✅ Discogs match: %s – %s (%s) | genre: %s",
                  info.artist, info.album, info.year or "?", info.genre or "—")
@@ -343,6 +345,8 @@ def plan_tracks(album_path: Path, info: AlbumInfo) -> list[tuple[Path, Path, Tra
         raw_artist = existing["artist"].strip()
         artist = info.artist if not raw_artist or is_contaminated_artist(raw_artist) else raw_artist
         title, credited = credit_track(title, split_multi_value(artist), split_multi_value(info.artist), info.tracklist)
+        credited = list(dict.fromkeys(discogs.canonical_credited_artist(value, {'artist_variations': info.artist_variations})
+                                      for value in credited))
         artist = "; ".join(_expand_joint_credit(credited, info.artist))
         if info.download_artist and artist.lower() == info.download_artist.lower():
             # A track carrying the download's cut-down credit of a joint album

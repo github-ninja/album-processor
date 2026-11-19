@@ -6,6 +6,10 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Resolve confirmed release artist variations in track artist tags and filenames.
+
 ### Changed
 
 - Remove temporary maintenance backups after the published album is verified.
