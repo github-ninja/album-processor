@@ -77,3 +77,5 @@ The owner confirmed that Discogs is the sole authority for catalogue metadata af
 ## Release preparation on 2026-11-19
 
 The owner requested promotion to GitHub and replacement of the active bot. The production baseline is `9871ee3` and the reviewed source is `70e98db`. The integration branch includes both. The container bind-mounts the production checkout's scripts directory. The current dependency lock, reviewed dependency lock and installed marker match. The production lock was free and there was no pending maintenance publication at preflight. Build and test the merged source in isolation, then recheck the lock immediately before deployment.
+
+Release 1.2.0 is live. The GitHub release points to `53daca5`. GitHub Actions and all 217 isolated Docker tests passed. The public Compose configuration, dependency check and CLI help passed. The existing cube container restarted with that code at 04:50 Moscow time and initialized Telegram polling. The mounted bot hash matched the deployment, and all 44 sampled persistent state files matched their pre-deployment hashes. The prior versions remain available in Git history.
