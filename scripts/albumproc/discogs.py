@@ -115,6 +115,13 @@ def join_artists(artists: list[dict], *, as_credited: bool = False) -> str:
     return "; ".join(names.values())
 
 
+def canonical_credited_artist(name: str, album: dict) -> str:
+    """Resolve a release's explicitly credited artist variation."""
+    variations = album.get("artist_variations") or {}
+    return next((canonical for variation, canonical in variations.items()
+                 if variation.casefold() == name.casefold()), name)
+
+
 def clean_title(title: str) -> str:
     """
     Tidy a Discogs title: drop invisible characters (zero-width spaces are
@@ -279,11 +286,15 @@ def _album_from_release(release: dict, results: list[dict], track_titles: list[s
 
     if not title or not track_release:
         return None
+    artist_entries = master.get("artists") or release.get("artists") or []
+    artist_variations = {clean_text(entry.get("anv") or ""): _artist_name(entry)
+                         for entry in artist_entries if entry.get("anv") and _artist_name(entry)}
     return {
         "release_id": track_release.get("id"),
         "master_id": master_id,
         "title": title,
-        "artist": join_artists(master.get("artists") or (release.get("artists") or [])),
+        "artist": join_artists(artist_entries),
+        "artist_variations": artist_variations,
         "year": str(year) if year else "",
         "genre": "; ".join(master.get("styles") or master.get("genres")
                               or track_release.get("styles") or track_release.get("genres") or []),

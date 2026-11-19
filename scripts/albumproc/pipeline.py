@@ -183,8 +183,10 @@ def resolve_album_info(candidate: AlbumCandidate) -> Optional[AlbumInfo]:
 
     def accepts(found: dict) -> bool:
         remote_artist = found.get("artist")
-        if artist and remote_artist and not (_is_part_of(artist, remote_artist)
-                                             or _is_part_of(tagged_artist, remote_artist)):
+        local_artist = discogs.canonical_credited_artist(artist, found)
+        local_tagged = discogs.canonical_credited_artist(tagged_artist, found)
+        if artist and remote_artist and not (_is_part_of(local_artist, remote_artist)
+                                             or _is_part_of(local_tagged, remote_artist)):
             return False
         return _tracklist_matches(album_path, found.get("tracklist", []))
 
@@ -199,8 +201,7 @@ def resolve_album_info(candidate: AlbumCandidate) -> Optional[AlbumInfo]:
     if found:
         discogs_artist = found.get("artist", "")
         download_artist = ""
-        if discogs_artist and (not artist or _is_part_of(artist, discogs_artist)
-                               or _is_part_of(tagged_artist, discogs_artist)):
+        if discogs_artist and accepts(found):
             # Same artist(s): take Discogs' spelling and its full list of
             # collaborators, which download tags often cut down to the first one.
             # Or an alias: the store credits the real name ("Carl Finlow"),

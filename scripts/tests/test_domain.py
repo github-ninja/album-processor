@@ -13,6 +13,36 @@ from tests.test_releases import release
 
 
 class DiscogsDecisions(TempLibraryCase):
+    def test_release_artist_variation_is_the_same_discogs_entity(self):
+        release = {"id": 1, "title": "Plasmoids", "year": 2024,
+                   "artists": [{"id": 13320, "name": "Carl A. Finlow", "anv": "Carl Finlow"}],
+                   "tracklist": [{"position": "1", "title": "Track"}]}
+        found = discogs._album_from_release(release, [], ["Track"], lambda *args, **kwargs: {})
+        self.assertEqual(found["artist"], "Carl A. Finlow")
+        self.assertEqual(found["artist_variations"], {"Carl Finlow": "Carl A. Finlow"})
+        source = self.downloads / "Carl Finlow" / "Plasmoids"
+        make_flac(source / "one.flac", title="Track", artist="Carl Finlow", albumartist="Carl Finlow")
+        with mock.patch.object(discogs, "lookup_album", return_value=(found, "matched")):
+            info = pipeline.resolve_album_info(pipeline.AlbumCandidate(source, "Carl Finlow"))
+        self.assertEqual(info.artist, "Carl A. Finlow")
+
+    def test_full_library_plan_moves_artist_variation_to_canonical_folder(self):
+        album = self.music / "Carl Finlow" / "2024 - Plasmoids"
+        make_flac(album / "one.flac", title="Track", artist="Carl Finlow", albumartist="Carl Finlow",
+                  album="Plasmoids", date="2024", tracknumber="1")
+        found = {"artist": "Carl A. Finlow", "artist_variations": {"Carl Finlow": "Carl A. Finlow"},
+                 "title": "Plasmoids", "year": "2024", "tracklist": [{"position": "1", "title": "Track"}]}
+        with mock.patch.object(discogs, "lookup_album", return_value=(found, "matched")), \
+                mock.patch.object(covers, "fetch_deezer_cover", return_value=None):
+            plan = library.plan_library_fixes(check_all=True)
+        self.assertEqual(plan[0]["new_artist_folder"], "Carl A. Finlow")
+        self.assertIn(["one.flac", "albumartist", ["Carl Finlow"], ["Carl A. Finlow"]], plan[0]["tag_fixes"])
+        with mock.patch.object(library.replaygain, "tag_album"):
+            self.assertEqual(library.apply_library_fixes(plan), 0)
+        target = self.music / "Carl A. Finlow" / "2024 - Plasmoids" / "01. Carl Finlow - Track.flac"
+        self.assertTrue(target.is_file())
+        self.assertEqual(tags.read_tags(target)["album_artist"], "Carl A. Finlow")
+
     def test_track_credits_use_the_edition_artist_names(self):
         performers = [{"name": "Dominic Angus", "anv": "Dom"}, {"name": "Ryme Tyme"}]
         release = {"tracklist": [{"position": "14", "title": "Iceberg", "artists": performers}]}

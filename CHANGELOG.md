@@ -6,6 +6,11 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Resolve a release's Discogs artist name variation to the credited artist
+  entity for imports and full library maintenance.
+
 ## [1.2.0] — 2026-11-19
 
 ### Fixed

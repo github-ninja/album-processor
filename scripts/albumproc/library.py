@@ -329,7 +329,8 @@ def _plan_title(album_dir: Path, files: list[Path], check_all: bool) -> dict:
 
     def accepts(candidate: dict) -> bool:
         remote_artist = candidate.get("artist")
-        if remote_artist and not artists_match(artist, remote_artist):
+        comparable_artist = discogs.canonical_credited_artist(artist, candidate)
+        if remote_artist and not artists_match(comparable_artist, remote_artist):
             result["note"] = f"Discogs нашёл другого артиста ({remote_artist}) — проигнорирован"
             return False
         tracklist = candidate.get("tracklist") or []
@@ -607,6 +608,17 @@ def plan_library_fixes(check_all: bool = False) -> list[dict]:
                                     tracklist, release_types,
                                     canonical_tracklist=(tracklist or []) if check_all else None,
                                     master_tracklist=found.get("master_tracklist") if found else None)
+        if found and check_all:
+            for f in files:
+                if f.suffix.lower() != ".flac" and not audioformat.needs_conversion(f):
+                    continue
+                current = _flac_values(f)
+                old = current.get("albumartist", [])
+                new = [discogs.canonical_credited_artist(value, found) for value in old]
+                if new != old:
+                    rel = str(f.relative_to(album_dir))
+                    tag_fixes = [fix for fix in tag_fixes if fix[0] != rel or fix[1] != "albumartist"]
+                    tag_fixes.append([rel, "albumartist", old, new])
         cover = _plan_cover(album_dir, files, artist, title["new_album"])
         convert = [[str(f.relative_to(album_dir)), audioformat.describe_format(f)]
                    for f in files if audioformat.needs_conversion(f)]
