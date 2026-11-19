@@ -73,3 +73,7 @@ The last cached replay exposed duplicate guest credits when a release-specific v
 ## Catalogue policy clarified on 2026-11-19
 
 The owner confirmed that Discogs is the sole authority for catalogue metadata after the release has been identified. Occasional catalogue errors are an accepted tradeoff for a single source. Future implementation decisions must follow this policy. The clarification updates the project documentation and records the distinction between release identification and metadata authority.
+
+## Release preparation on 2026-11-19
+
+The owner requested promotion to GitHub and replacement of the active bot. The production baseline is `9871ee3` and the reviewed source is `70e98db`. The integration branch includes both. The container bind-mounts the production checkout's scripts directory. The current dependency lock, reviewed dependency lock and installed marker match. The production lock was free and there was no pending maintenance publication at preflight. Build and test the merged source in isolation, then recheck the lock immediately before deployment.

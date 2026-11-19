@@ -6,6 +6,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-11-19
+
 ### Fixed
 
 - Library maintenance preserves established album punctuation during local
@@ -167,7 +169,8 @@ First public release.
 - `/fixlibrary`: plan → review → apply for names, tags, covers, format, ReplayGain,
   release types and duplicates; journal and moved-aside copies for every change.
 
-[Unreleased]: https://github.com/github-ninja/album-processor/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/github-ninja/album-processor/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/github-ninja/album-processor/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/github-ninja/album-processor/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/github-ninja/album-processor/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/github-ninja/album-processor/releases/tag/v1.0.0
