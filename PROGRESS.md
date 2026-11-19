@@ -69,3 +69,7 @@ The last cached replay exposed duplicate guest credits when a release-specific v
 - A read-only verifier compared every affected album with its source snapshot and every recorded old tag with its file. It checked the generated filenames, case-insensitive destination collisions, per-disc counts and the saved JPEG digest. The upgraded cover matches the existing artwork and increases resolution from 500×500 to 1000×1000.
 - The final public image built with the pinned dependency layer. All 217 tests passed with networking unavailable. Compose structure, CLI help, dependency integrity and the Git whitespace check passed.
 - The reviewed files and captured responses stayed outside the public repository. The active deployment and media were left as observed. The plan is a preview; all application tests used synthetic media. Published release dates may disagree with Discogs where its catalogue lacks an original release.
+
+## Catalogue policy clarified on 2026-11-19
+
+The owner confirmed that Discogs is the sole authority for catalogue metadata after the release has been identified. Occasional catalogue errors are an accepted tradeoff for a single source. Future implementation decisions must follow this policy. The clarification updates the project documentation and records the distinction between release identification and metadata authority.
