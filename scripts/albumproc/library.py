@@ -748,6 +748,14 @@ def recover_maintenance() -> None:
         journal({**step["entry"], "status": "restored"})
     elif target.is_dir() and jobs.manifest(target) == step["prepared_manifest"]:
         journal({**step["entry"], "new_path": str(target), "archive": step["backups"][0][1]})
+        if step.get("remove_backup"):
+            archive = Path(step["backups"][0][1])
+            if not archive.resolve().is_relative_to((config.state_dir() / "replaced").resolve()):
+                raise ValueError("maintenance backup escapes the archive")
+            if archive.is_symlink():
+                raise ValueError("maintenance backup is a symbolic link")
+            if archive.exists():
+                shutil.rmtree(archive)
     else:
         raise RuntimeError("maintenance publication could not be verified; inspect maintenance/pending.json")
     pending.unlink()
@@ -867,7 +875,7 @@ def _apply_entry(album_dir: Path, entry: dict) -> None:
     backups = [[str(album_dir), str(archive_path(album_dir))]]
     step = {"entry": {key: value for key, value in record.items() if key not in {"manifest", "duplicate_manifest"}},
             "work": str(work), "target": str(target), "backups": backups,
-            "prepared_manifest": jobs.manifest(work)}
+            "prepared_manifest": jobs.manifest(work), "remove_backup": True}
     pending = _maintenance_dir() / "pending.json"
     write_json(pending, step)
     journal({**record, "status": "started", "archive": backups[0][1]})
@@ -887,7 +895,7 @@ def _apply_entry(album_dir: Path, entry: dict) -> None:
 
 
 def apply_library_fixes(plan: list[dict]) -> int:
-    """Apply each album independently, preserving the original in the archive."""
+    """Apply each album independently and recover interrupted publication."""
     recover_maintenance()
     failed = 0
     for entry in plan:

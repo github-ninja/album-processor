@@ -6,6 +6,11 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Remove temporary maintenance backups after the published album is verified.
+  Interrupted cleanup resumes from the maintenance record.
+
 ### Fixed
 
 - Resolve a release's Discogs artist name variation to the credited artist

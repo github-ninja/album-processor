@@ -186,13 +186,13 @@ on hybrid post-quantum handshakes; TLS 1.3 and certificate verification remain e
 - Library plans reject stale metadata, missing tracks, path escapes and existing
   destination folders before applying changes. The plan stores the selected
   Deezer cover so application can use the exact image offline. Lossless conversion
-  and renaming are handled together on a private copy. The entire original goes to the archive
-  on success. Totals reflect the actual tracks and discs.
+  and renaming are handled together on a private copy. After the published album
+  is verified, its temporary maintenance backup is deleted. Totals reflect the actual tracks and discs.
 - An unreachable downloader is treated as potentially busy. Download completion
   is checked against distinct files actually present, not only the task's file list.
 - One user only: the bot ignores everyone but `ALLOWED_ID`.
-- Nothing in the library is deleted: replaced albums and covers are moved to
-  `music/.album_processor/replaced/`, every change is journaled with its old values.
+- Replaced albums and duplicates are moved to `music/.album_processor/replaced/`.
+  Maintenance changes are journaled with their old values.
 - Files are replaced only after the new version has been written and checked
   (conversion, CUE split, tags).
 
@@ -342,7 +342,7 @@ older measurements when requested. Import results are passed to the bot as JSON,
 with separate Discogs states for no match, rejected match and service failure.
 If a maintenance swap is interrupted, the next CLI worker checks the pending
 record in `music/.album_processor/maintenance/` and restores or finishes it. Keep
-an independent backup before bulk edits and allow space for archived originals.
+an independent backup before bulk edits and allow space for temporary copies.
 
 See [architecture](docs/ARCHITECTURE.md) for the data flow and recovery limits.
 

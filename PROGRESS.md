@@ -83,3 +83,7 @@ Release 1.2.0 is live. The GitHub release points to `53daca5`. GitHub Actions an
 ## Discogs artist variations
 
 On 2026-11-19, Discogs identified the credited name Carl Finlow as an artist name variation of Carl A. Finlow, artist ID 13320. Import and full maintenance now resolve variations supplied by the matching release to its artist entity, keeping distinct alias entities separate. The read-only plan for Plasmoids proposes Carl A. Finlow / 2023 - Plasmoids, with the album-artist tags and missing genre updated. Synthetic maintenance verifies publication and the original archive.
+
+## Maintenance backup cleanup
+
+The owner requested removal of temporary backups after successful operations and explicitly authorized deleting the previous Plasmoids backup. Its 12 audio identities were verified against the published album before removal. New maintenance transactions remove their temporary backup only after validating the published manifest. The pending record remains until cleanup finishes and legacy pending records retain their earlier behavior. Replaced editions and duplicates continue to be archived.

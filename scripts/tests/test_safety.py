@@ -3,6 +3,7 @@ import asyncio
 import json
 import unittest
 from base64 import b64encode
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
@@ -297,8 +298,25 @@ class LibrarySafety(TempLibraryCase):
                     self.assertEqual(track.read_bytes(), before)
                 else:
                     archives = list(config.state_dir().glob('replaced/**/one.flac'))
-                    self.assertEqual([path.read_bytes() for path in archives], [before])
+                    self.assertEqual(archives, [])
                     self.assertEqual(FLAC(album / 'new.flac')['album'], ['Other'])
+
+    def test_interrupted_backup_cleanup_resumes_after_publication(self):
+        album = self.album()
+        entry = self.entry(album, new_album='Other', new_year='2001')
+        original = library.shutil.rmtree
+        def interrupted(path, *args, **kwargs):
+            if Path(path).is_relative_to(config.state_dir() / 'replaced'):
+                raise OSError('cleanup interrupted')
+            return original(path, *args, **kwargs)
+        with mock.patch.object(library.shutil, 'rmtree', side_effect=interrupted):
+            with self.assertRaisesRegex(OSError, 'cleanup interrupted'):
+                library.apply_library_fixes([entry])
+        self.assertTrue((config.state_dir() / 'maintenance' / 'pending.json').exists())
+        library.recover_maintenance()
+        self.assertFalse((config.state_dir() / 'maintenance' / 'pending.json').exists())
+        self.assertFalse(list(config.state_dir().glob('replaced/**/one.flac')))
+        self.assertEqual(FLAC(album / 'one.flac')['album'], ['Other'])
 
     def test_plan_rejects_a_track_added_after_review(self):
         album = self.album()
